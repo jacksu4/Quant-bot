@@ -440,7 +440,7 @@ with col_trade3:
     with col_sell:
         # 获取当前持仓
         currency = trade_symbol.split('/')[0]
-        if currency in balance:
+        if currency in balance and balance[currency]['free'] > 0:
             sell_amount = balance[currency]['free']
             if st.button(f"📉 卖出全部 ({sell_amount:.6f})", use_container_width=True):
                 try:

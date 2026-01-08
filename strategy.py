@@ -159,6 +159,13 @@ class RSIMeanReversionStrategy:
             print(f"⚠️ 已达到最大持仓数 ({MAX_POSITIONS})，跳过买入")
             return False
 
+        # 检查是否已经持有该币种
+        currency = signal['symbol'].split('/')[0]
+        for pos in positions:
+            if pos['currency'] == currency:
+                print(f"⚠️ 已持有 {currency}，跳过重复买入")
+                return False
+
         # 检查USDT余额
         usdt_free = self.client.get_usdt_balance()
         min_order = self.client.get_min_order_usdt(signal['symbol'])
@@ -257,6 +264,7 @@ class RSIMeanReversionStrategy:
             # 2. 检查现有持仓的止损/止盈
             positions = self.client.get_all_positions()
             result['positions'] = positions
+            sold_symbols = set()  # 记录已卖出的symbol，避免重复卖出
 
             if positions:
                 print(f"\n💼 当前持仓 ({len(positions)}):")
@@ -271,14 +279,18 @@ class RSIMeanReversionStrategy:
                         order = self.execute_sell(pos['symbol'], pos['amount'], 'STOP_LOSS')
                         if order:
                             result['actions'].append({'type': 'STOP_LOSS', 'symbol': pos['symbol']})
+                            sold_symbols.add(pos['symbol'])
                     elif action == 'TAKE_PROFIT':
                         print(f"  🎯 触发止盈! 盈利 {pos['pnl_percent']:.2f}%")
                         order = self.execute_sell(pos['symbol'], pos['amount'], 'TAKE_PROFIT')
                         if order:
                             result['actions'].append({'type': 'TAKE_PROFIT', 'symbol': pos['symbol']})
+                            sold_symbols.add(pos['symbol'])
 
-            # 3. 检查RSI信号的卖出（非止损/止盈）
+            # 3. 检查RSI信号的卖出（非止损/止盈，跳过已卖出的）
             for pos in positions:
+                if pos['symbol'] in sold_symbols:
+                    continue  # 跳过已在步骤2中卖出的持仓
                 rsi = analysis['rsi_data'].get(pos['symbol'], 50)
                 if rsi > RSI_OVERBOUGHT:
                     print(f"  📉 {pos['symbol']} RSI={rsi:.1f} 超买，执行卖出")

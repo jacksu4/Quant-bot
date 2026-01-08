@@ -119,7 +119,9 @@ class BinanceClient:
         avg_loss = sum(recent_losses) / period
 
         if avg_loss == 0:
-            return 100.0
+            if avg_gain == 0:
+                return 50.0  # No price movement - neutral
+            return 100.0  # All gains, no losses - extremely overbought
 
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
@@ -172,7 +174,12 @@ class BinanceClient:
     def create_market_buy_usdt(self, symbol: str, usdt_amount: float) -> dict:
         """市价买入（按USDT金额）"""
         ticker = self.get_ticker(symbol)
-        price = ticker['ask']  # 使用卖一价
+        price = ticker.get('ask')  # 使用卖一价
+
+        # 验证价格有效
+        if price is None or price <= 0:
+            raise ValueError(f"Invalid price for {symbol}: {price}")
+
         amount = usdt_amount / price
 
         # 获取交易对精度
