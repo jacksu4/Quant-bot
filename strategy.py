@@ -212,6 +212,20 @@ class RSIMeanReversionStrategy:
     def execute_sell(self, symbol: str, amount: float, reason: str = 'SIGNAL') -> dict:
         """执行卖出"""
         try:
+            # 检查最小交易数量
+            min_amount = self.client.get_min_order_amount(symbol)
+
+            if amount < min_amount:
+                print(f"⚠️ 数量太小无法交易: {symbol}, 数量: {amount:.8f} < 最小值: {min_amount}")
+                print(f"   跳过交易并记录为粉尘持仓")
+                log_action('DUST_POSITION', {
+                    'symbol': symbol,
+                    'amount': amount,
+                    'min_required': min_amount,
+                    'reason': reason,
+                })
+                return {'dust': True, 'symbol': symbol, 'amount': amount}
+
             print(f"📉 执行卖出: {symbol}, 数量: {amount}, 原因: {reason}")
 
             order = self.client.create_market_sell(symbol, amount)
