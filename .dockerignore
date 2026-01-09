@@ -1,0 +1,52 @@
+# Python
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Documentation (build时不需要)
+*.md
+!requirements.txt
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# CI/CD
+.github/
+
+# Logs and data (should use volumes)
+logs/
+*.log
+backups/
+*.tar.gz
+
+# Deployment
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+# Note: supervisord.conf is needed for dashboard container, so don't exclude it
+
+# Environment
+.env.example
+.env.local

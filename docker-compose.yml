@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # 简单RSI策略
+  rsi-strategy:
+    build:
+      context: .
+      dockerfile: Dockerfile.strategy
+    container_name: quant-rsi-strategy
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - quant-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/data/strategy_log.json') else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # 专业级多策略
+  professional-strategy:
+    build:
+      context: .
+      dockerfile: Dockerfile.professional
+    container_name: quant-professional-strategy
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - quant-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; log_file='/app/data/professional_strategy_log.json'; exit(0 if os.path.exists(log_file) and time.time() - os.path.getmtime(log_file) < 3600 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Dashboard服务
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: quant-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data:ro  # 只读挂载
+    ports:
+      - "8501:8501"  # 简单Dashboard
+      - "8502:8502"  # 专业Dashboard
+    networks:
+      - quant-network
+    depends_on:
+      - rsi-strategy
+      - professional-strategy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "streamlit run"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  quant-network:
+    driver: bridge

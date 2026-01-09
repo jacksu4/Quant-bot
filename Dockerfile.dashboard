@@ -1,0 +1,31 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# 安装系统依赖和supervisor
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制依赖文件并安装
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 复制所有Python文件
+COPY *.py .
+
+# 创建日志目录
+RUN mkdir -p /app/data /var/log/supervisor /app/logs
+
+# 复制supervisor配置
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# 暴露两个端口
+EXPOSE 8501 8502
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD pgrep -f "streamlit run" || exit 1
+
+# 启动命令
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
