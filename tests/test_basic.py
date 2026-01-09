@@ -36,12 +36,12 @@ def test_import_exchange():
 def test_import_strategy():
     """Test that strategy module can be imported"""
     try:
-        from strategy import RSIStrategy
-        assert RSIStrategy is not None
+        from strategy import RSIMeanReversionStrategy
+        assert RSIMeanReversionStrategy is not None
     except ModuleNotFoundError as e:
         pytest.skip(f"Dependencies not installed: {e}")
     except Exception as e:
-        pytest.fail(f"Failed to import RSIStrategy: {e}")
+        pytest.fail(f"Failed to import RSIMeanReversionStrategy: {e}")
 
 
 def test_import_professional_strategy():
