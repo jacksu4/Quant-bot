@@ -13,10 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 
 # 复制所有Python文件
 COPY *.py .
-COPY data/ ./data/ 2>/dev/null || mkdir -p ./data
 
 # 创建日志目录
-RUN mkdir -p /var/log/supervisor /app/logs
+RUN mkdir -p /app/data /var/log/supervisor /app/logs
 
 # 复制supervisor配置
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
