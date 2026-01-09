@@ -1,5 +1,8 @@
 # Environment variables
 .env
+.env.local
+.env.backup
+.env.*.local
 
 # Python
 __pycache__/
@@ -8,14 +11,37 @@ __pycache__/
 .venv/
 venv/
 env/
+*.egg-info/
+dist/
+build/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+.DS_Store
 
 # Logs
 *.log
+logs/
 
 # Data snapshots (contains trading history)
 data/
+
+# Backups
+backups/
+*.tar.gz
+*.zip
+
+# Docker
+.dockerignore.local
+
+# System
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*~

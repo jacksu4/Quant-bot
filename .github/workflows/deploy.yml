@@ -1,0 +1,79 @@
+name: Auto Deploy to Volcano Engine Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  deploy:
+    name: Deploy to Production Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            # 进入项目目录
+            cd /root/Quant-bot
+
+            # 备份当前配置
+            echo "📦 Backing up current configuration..."
+            cp .env .env.backup 2>/dev/null || true
+
+            # 拉取最新代码
+            echo "📥 Pulling latest code from GitHub..."
+            git pull origin main
+
+            # 恢复.env文件（因为.env在.gitignore中）
+            if [ -f .env.backup ]; then
+              cp .env.backup .env
+              rm .env.backup
+            fi
+
+            # 运行部署脚本
+            echo "🚀 Running deployment script..."
+            bash deploy.sh
+
+            # 显示容器状态
+            echo "📊 Container status:"
+            docker-compose ps
+
+            echo "✅ Deployment completed at $(date)"
+
+      - name: Health Check
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            cd /root/Quant-bot
+            echo "🔍 Running health check..."
+            sleep 30  # 等待容器启动
+
+            # 检查容器健康状态
+            docker-compose ps
+
+            # 检查日志
+            echo "📝 Recent logs:"
+            docker-compose logs --tail=20
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment succeeded"
+          else
+            echo "❌ Deployment failed"
+          fi
