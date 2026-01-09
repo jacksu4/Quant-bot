@@ -44,8 +44,8 @@ backups/
 # Deployment
 docker-compose*.yml
 Dockerfile*
-supervisord.conf
 .dockerignore
+# Note: supervisord.conf is needed for dashboard container, so don't exclude it
 
 # Environment
 .env.example
