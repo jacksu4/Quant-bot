@@ -442,13 +442,18 @@ with col_trade3:
         currency = trade_symbol.split('/')[0]
         if currency in balance and balance[currency]['free'] > 0:
             sell_amount = balance[currency]['free']
-            if st.button(f"📉 卖出全部 ({sell_amount:.6f})", use_container_width=True):
-                try:
-                    order = client.create_market_sell(trade_symbol, sell_amount)
-                    st.success(f"✅ 卖出成功! 订单ID: {order['id']}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ 卖出失败: {e}")
+            min_amount = client.get_min_order_amount(trade_symbol)
+
+            if sell_amount >= min_amount:
+                if st.button(f"📉 卖出全部 ({sell_amount:.6f})", use_container_width=True):
+                    try:
+                        order = client.create_market_sell(trade_symbol, sell_amount)
+                        st.success(f"✅ 卖出成功! 订单ID: {order['id']}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 卖出失败: {e}")
+            else:
+                st.button(f"📉 数量太小 ({sell_amount:.6f} < {min_amount})", use_container_width=True, disabled=True)
         else:
             st.button("📉 无持仓", use_container_width=True, disabled=True)
 

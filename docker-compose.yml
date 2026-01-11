@@ -1,7 +1,21 @@
 version: '3.8'
 
+# ============================================================================
+# Quant-bot Docker Compose 配置
+# ============================================================================
+# 策略选择说明：
+#   1. 简单RSI策略 (rsi-strategy)     - 适合新手，端口8501
+#   2. Robust RSI策略 (robust-strategy) - 高夏普比率，端口8501
+#   3. 专业多策略 (professional-strategy) - 5策略组合，端口8502
+#
+# 默认启动所有策略，可通过以下方式选择性启动：
+#   docker-compose up -d rsi-strategy dashboard
+#   docker-compose up -d robust-strategy dashboard
+#   docker-compose up -d professional-strategy dashboard
+# ============================================================================
+
 services:
-  # 简单RSI策略
+  # ========== 策略1: 简单RSI均值回归策略 ==========
   rsi-strategy:
     build:
       context: .
@@ -26,8 +40,40 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    profiles:
+      - rsi
+      - all
 
-  # 专业级多策略
+  # ========== 策略2: Robust RSI策略 (高夏普比率) ==========
+  robust-strategy:
+    build:
+      context: .
+      dockerfile: Dockerfile.robust
+    container_name: quant-robust-strategy
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - quant-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; log_file='/app/data/robust_strategy_log.json'; exit(0 if os.path.exists(log_file) and time.time() - os.path.getmtime(log_file) < 3600 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - robust
+      - all
+
+  # ========== 策略3: 专业级多策略系统 ==========
   professional-strategy:
     build:
       context: .
@@ -52,8 +98,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    profiles:
+      - professional
+      - all
 
-  # Dashboard服务
+  # ========== Dashboard服务 ==========
   dashboard:
     build:
       context: .
@@ -65,13 +114,10 @@ services:
     volumes:
       - ./data:/app/data:ro  # 只读挂载
     ports:
-      - "8501:8501"  # 简单Dashboard
+      - "8501:8501"  # 简单Dashboard / Robust Dashboard
       - "8502:8502"  # 专业Dashboard
     networks:
       - quant-network
-    depends_on:
-      - rsi-strategy
-      - professional-strategy
     logging:
       driver: "json-file"
       options:
