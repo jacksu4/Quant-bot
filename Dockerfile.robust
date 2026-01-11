@@ -1,0 +1,20 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# 复制依赖文件并安装
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 复制所有Python文件
+COPY *.py .
+
+# 创建数据和日志目录
+RUN mkdir -p /app/data /app/logs
+
+# 健康检查 - 检查日志文件是否存在且最近更新
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import os, time; log_file='/app/data/robust_strategy_log.json'; exit(0 if os.path.exists(log_file) and time.time() - os.path.getmtime(log_file) < 3600 else 1)"
+
+# 启动策略
+CMD ["python", "run_robust_strategy.py", "--interval", "300"]

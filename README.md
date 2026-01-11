@@ -1,29 +1,24 @@
 # Quant-bot - 量化交易系统
 
-专业级加密货币量化交易系统，包含基础RSI策略和高级多策略组合。
+专业级加密货币量化交易系统，支持多策略、自动化部署和实时监控。
 
-## 🎯 系统选择
+---
 
-本项目包含两套系统，根据你的需求选择：
+## 🎯 策略选择
 
-### 方案1：简单RSI策略（适合初学者）
-- ✅ 简单易懂，5分钟上手
-- ✅ 单策略，逻辑清晰
-- ✅ 适合小额资金（$100-1000）
-- 📖 文档：见下方"简单RSI策略"章节
+本项目包含三套策略，根据你的需求选择：
 
-### 方案2：专业级多策略系统（适合专业投资者/基金）
-- ✅ 5大策略组合，分散风险
-- ✅ Kelly仓位 + VaR风险管理
-- ✅ 预期年化收益30-50%，回撤<15%
-- ✅ 适合机构和大额资金（$10,000+）
-- 📖 文档：`STRATEGY_GUIDE.md`
+| 策略 | 适用人群 | 资金规模 | 预期夏普比率 | 最大回撤 |
+|------|----------|----------|--------------|----------|
+| **简单RSI策略** | 新手 | $100-1,000 | ~1.0 | 可能>30% |
+| **Robust RSI策略** ⭐推荐 | 追求稳定 | $500-10,000 | >1.5 | <10% |
+| **专业多策略系统** | 机构/进阶 | $10,000+ | >2.0 | <15% |
 
 ---
 
 ## 🚀 快速开始
 
-### 安装依赖
+### 1. 安装
 
 ```bash
 # 克隆仓库
@@ -38,117 +33,194 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 配置API
-
-创建 `.env` 文件：
+### 2. 配置
 
 ```bash
-BINANCE_API_KEY=你的API_KEY
-BINANCE_API_SECRET=你的API_SECRET
-TRADING_MODE=testnet  # 先用testnet测试！
+# 复制配置模板
+cp .env.example .env
+
+# 编辑配置 (重要!)
+vim .env
 ```
 
-**⚠️ 重要**：强烈建议先在testnet测试至少1周！
+**.env 配置说明:**
+```bash
+# Binance API密钥
+BINANCE_API_KEY=your_api_key
+BINANCE_API_SECRET=your_api_secret
 
----
+# 交易模式 (非常重要!)
+TRADING_MODE=live      # live=真实交易, testnet=测试网
 
-## 📊 方案1：简单RSI策略
+# 风控参数
+MAX_POSITION_SIZE_USDT=15    # 单次最大交易$15
+STOP_LOSS_PERCENT=3.0        # 止损3%
+TAKE_PROFIT_PERCENT=5.0      # 止盈5%
+```
 
-### 策略说明
-
-RSI（相对强弱指数）是衡量价格"超买"或"超卖"的指标：
-
-| RSI 值 | 状态 | 操作 |
-|--------|------|------|
-| 0-30 | 超卖（价格"过冷"） | 买入 |
-| 30-70 | 中性（正常） | 观望 |
-| 70-100 | 超买（价格"过热"） | 卖出 |
-
-**核心逻辑**：价格偏离太多后，往往会回归到正常水平。
-
-### 风险控制
-
-- 单次最大交易：$15 USDT
-- 止损：亏损 3% 自动卖出
-- 止盈：盈利 5% 自动卖出
-- 最多同时持有 2 个币种
-
-### 使用方法
+### 3. 运行策略
 
 ```bash
-# 启动策略
-python run_strategy.py &
+# 方式1: 直接运行 (推荐Robust策略)
+python run_robust_strategy.py
 
-# 查看Dashboard
+# 方式2: Docker运行
+docker-compose up -d robust-strategy dashboard
+```
+
+### 4. 查看Dashboard
+
+```bash
+# 本地运行
 streamlit run dashboard.py
 
-# 停止策略
-pkill -f run_strategy
+# 访问地址
+http://localhost:8501
 ```
 
 ---
 
-## 🎓 方案2：专业级多策略系统
+## 📊 策略详解
 
-### 系统特点
+### 策略1: 简单RSI均值回归
 
-#### 5大策略组合
-| 策略 | 权重 | 特点 |
-|------|------|------|
-| 多因子选币 | 40% | 6大因子综合评分选择优质币种 |
-| 趋势跟踪 | 25% | EMA/MACD/ADX多时间框架确认 |
-| 统计套利 | 15% | 协整配对交易，市场中性 |
-| 波动率突破 | 10% | 布林带突破，快进快出 |
-| 动态对冲 | 10% | 根据市场状态调整仓位 |
-
-#### 风险管理
-- ✅ Kelly Criterion仓位管理
-- ✅ VaR (99%) < 5%
-- ✅ 最大回撤 < 15%
-- ✅ 三级风险防护（NORMAL/CAUTIOUS/DEFENSIVE）
-- ✅ 熔断机制（回撤>15%立即停止）
-
-#### 预期性能
-- 年化收益率：30-50%
-- 夏普比率：> 2.0
-- 最大回撤：< 15%
-- 胜率：> 55%
-
-### 使用方法
+**核心逻辑:**
+- RSI < 30 (超卖) → 买入
+- RSI > 70 (超买) → 卖出
+- 止损: -3%, 止盈: +5%
 
 ```bash
-# 运行完整策略
+python run_strategy.py
+```
+
+### 策略2: Robust RSI策略 ⭐推荐
+
+**特点:**
+- 多时间框架确认 (1H + 4H)
+- EMA趋势过滤
+- ATR波动率调整仓位
+- 动态止损止盈
+
+**目标性能:**
+- 夏普比率 > 1.5
+- 最大回撤 < 10%
+- 胜率 > 55%
+
+```bash
+python run_robust_strategy.py
+```
+
+### 策略3: 专业多策略系统
+
+**5大策略组合:**
+| 策略 | 权重 | 说明 |
+|------|------|------|
+| 多因子选币 | 40% | 6因子综合评分 |
+| 趋势跟踪 | 25% | EMA/MACD/ADX |
+| 统计套利 | 15% | 配对交易 |
+| 波动率突破 | 10% | 布林带突破 |
+| 动态对冲 | 10% | 市场状态调整 |
+
+```bash
 python professional_strategy.py
-
-# 启动专业Dashboard
-streamlit run professional_dashboard.py
-
-# 测试各个模块
-python multi_factor_engine.py    # 多因子选币
-python risk_manager.py           # 风险管理
-python statistical_arbitrage.py  # 统计套利
-python backtest_engine.py        # 回测引擎
 ```
 
-### Python API
+---
 
-```python
-# 方式1：运行完整策略
-from professional_strategy import ProfessionalStrategy
-strategy = ProfessionalStrategy()
-strategy.run_once()
+## 🔄 策略切换
 
-# 方式2：单独使用模块
-from multi_factor_engine import MultiFactorEngine
-engine = MultiFactorEngine()
-selected = engine.select_coins(top_n=5)
+### 本地运行切换
 
-from risk_manager import RiskManager
-rm = RiskManager()
-report = rm.generate_risk_report()
+```bash
+# 简单RSI
+python run_strategy.py
+
+# Robust RSI (推荐)
+python run_robust_strategy.py
+
+# 专业多策略
+python professional_strategy.py
 ```
 
-**详细文档**：见 `STRATEGY_GUIDE.md`
+### Docker切换
+
+```bash
+# 停止当前策略
+docker-compose down
+
+# 启动指定策略
+docker-compose up -d rsi-strategy dashboard          # 简单RSI
+docker-compose up -d robust-strategy dashboard       # Robust RSI
+docker-compose up -d professional-strategy dashboard # 专业多策略
+
+# 或使用profile
+docker-compose --profile robust up -d
+```
+
+---
+
+## 🖥️ Dashboard访问
+
+### 本地访问
+```
+简单Dashboard:   http://localhost:8501
+专业Dashboard:   http://localhost:8502
+```
+
+### 服务器访问
+部署到服务器后:
+```
+简单Dashboard:   http://服务器IP:8501
+专业Dashboard:   http://服务器IP:8502
+```
+
+**安全建议:**
+- 配置防火墙限制访问IP
+- 使用Nginx反向代理+HTTPS
+- 添加Basic Auth认证
+
+---
+
+## 🚢 服务器部署
+
+### 方式1: 自动部署 (推荐)
+
+本项目已配置GitHub Actions，推送到main分支自动部署:
+
+```bash
+# 本地修改后
+git add .
+git commit -m "更新配置"
+git push origin main
+# GitHub Actions自动部署到服务器
+```
+
+**GitHub Secrets配置:**
+1. 进入仓库 Settings > Secrets and variables > Actions
+2. 添加以下secrets:
+   - `SERVER_HOST`: 服务器IP
+   - `SERVER_USER`: SSH用户名 (通常是root)
+   - `SERVER_SSH_KEY`: SSH私钥
+   - `SERVER_PORT`: SSH端口 (默认22)
+
+### 方式2: 手动部署
+
+```bash
+# SSH登录服务器
+ssh root@服务器IP
+
+# 进入项目目录
+cd /root/Quant-bot
+
+# 拉取最新代码
+git pull origin main
+
+# 部署
+bash deploy.sh
+
+# 查看状态
+docker-compose ps
+```
 
 ---
 
@@ -156,84 +228,92 @@ report = rm.generate_risk_report()
 
 ```
 Quant-bot/
-├── 基础RSI策略
-│   ├── run_strategy.py        # 策略运行器
-│   ├── strategy.py            # RSI策略逻辑
-│   ├── dashboard.py           # 基础Dashboard
-│   └── bot.py                 # Bot运行器
+├── 策略文件
+│   ├── strategy.py              # 简单RSI策略
+│   ├── robust_strategy.py       # Robust RSI策略 ⭐
+│   ├── professional_strategy.py # 专业多策略
+│   ├── run_strategy.py          # RSI运行器
+│   ├── run_robust_strategy.py   # Robust运行器
 │
-├── 专业级系统
-│   ├── professional_strategy.py    # 主策略（5策略组合）
-│   ├── multi_factor_engine.py      # 多因子选币引擎
-│   ├── risk_manager.py             # 风险管理系统
-│   ├── statistical_arbitrage.py    # 统计套利模块
-│   ├── backtest_engine.py          # 回测引擎
-│   ├── indicators.py               # 技术指标库
-│   └── professional_dashboard.py   # 专业Dashboard
+├── 核心模块
+│   ├── exchange.py              # Binance API封装
+│   ├── risk_manager.py          # 风险管理
+│   ├── multi_factor_engine.py   # 多因子引擎
+│   ├── indicators.py            # 技术指标库
 │
-├── 基础设施
-│   ├── exchange.py            # Binance API封装
-│   └── test_bug_fixes.py      # 测试代码
+├── 前端
+│   ├── dashboard.py             # 简单Dashboard
+│   ├── professional_dashboard.py# 专业Dashboard
 │
-└── 文档
-    ├── README.md              # 本文件
-    ├── STRATEGY_GUIDE.md      # 完整策略指南
-    ├── BUG_FIXES_REPORT.md    # Bug修复报告
-    └── CLAUDE.md              # 项目指引
+├── 部署
+│   ├── docker-compose.yml       # Docker编排
+│   ├── Dockerfile.*             # 各策略容器
+│   ├── deploy.sh                # 部署脚本
+│
+├── CI/CD
+│   └── .github/workflows/
+│       ├── deploy.yml           # 自动部署
+│       └── test.yml             # 自动测试
+│
+└── 配置
+    ├── .env                     # API配置 (不提交)
+    ├── .env.example             # 配置模板
+    └── requirements.txt         # Python依赖
 ```
 
 ---
 
-## 🔧 功能对比
+## ⚙️ 常用命令
 
-| 功能 | 简单RSI策略 | 专业级系统 |
-|------|------------|-----------|
-| 策略数量 | 1个 | 5个组合 |
-| 因子数量 | 1个(RSI) | 6个 |
-| 风险管理 | 简单止损 | Kelly+VaR+回撤控制 |
-| 市场适应 | 固定 | 动态调整(20%-70%) |
-| 预期收益 | 20-30% | 30-50% |
-| 最大回撤 | 可能>30% | <15% |
-| 夏普比率 | ~1.0 | >2.0 |
-| 适合资金 | $100-1000 | $10,000+ |
-| 学习曲线 | 1天 | 1周 |
+### 策略管理
+```bash
+# 单次运行
+python run_robust_strategy.py --once
 
----
+# 自定义间隔 (秒)
+python run_robust_strategy.py --interval 60
+```
 
-## 📈 Dashboard预览
+### Docker管理
+```bash
+docker-compose up -d           # 启动
+docker-compose ps              # 状态
+docker-compose logs -f         # 日志
+docker-compose restart         # 重启
+docker-compose down            # 停止
+```
 
-### 简单RSI Dashboard
-- 账户总览
-- 持仓分析
-- RSI指标
-- 交易历史
-- 资产快照
+### 监控
+```bash
+docker-compose logs --tail=100 robust-strategy
+tail -f data/robust_strategy_log.json
+bash healthcheck.sh
+```
 
-### 专业级Dashboard
-- 实时权益曲线
-- 多因子得分可视化
-- 风险指标监控（VaR/夏普/回撤）
-- 5大策略信号
-- 统计套利配对
+### 备份
+```bash
+tar -czf backup_$(date +%Y%m%d).tar.gz data/
+```
 
 ---
 
 ## ⚠️ 风险提示
 
-### 新手必读
-1. **先在testnet测试** - 至少1周
-2. **小额开始** - $100-500
-3. **每日检查** - 监控Dashboard
-4. **理解策略** - 阅读文档
-5. **设置告警** - 回撤>10%通知
-6. **定期备份** - data目录
+### 使用前必读
+
+1. **先测试** - 使用testnet至少测试1周
+2. **小额开始** - 初始资金不超过$500
+3. **每日监控** - 检查Dashboard和日志
+4. **设置止损** - 确保风控参数已配置
+5. **定期备份** - 备份data目录
 
 ### 免责声明
+
 - ❌ 不保证盈利
 - ❌ 可能亏损全部本金
 - ❌ 历史表现≠未来收益
 - ✅ 仅供学习研究使用
-- ✅ 建议不超过总资产30%
+- ✅ 建议不超过总资产30%用于交易
 
 ---
 
@@ -243,63 +323,35 @@ Quant-bot/
 ```python
 from exchange import BinanceClient
 client = BinanceClient()
-print(client.get_mode_str())  # 确认模式
+print(client.get_mode_str())  # 检查模式
 balance = client.get_balance()  # 测试连接
-```
-
-### 数据不足
-```python
-ohlcv = client.get_ohlcv('BTC/USDT', '1h', limit=100)
-print(f"K线数量: {len(ohlcv)}")  # 应该≥50
 ```
 
 ### 策略未运行
 ```bash
-ps aux | grep strategy  # 检查进程
-tail -f /tmp/strategy.log  # 查看日志
+docker-compose ps              # 检查容器状态
+docker-compose logs strategy   # 查看错误
 ```
+
+### 订单失败
+- 检查USDT余额是否充足
+- 确认交易金额大于最小订单限制 ($5)
+- 查看日志中的错误信息
 
 ---
 
-## 📚 学习资源
+## 📚 文档
 
-### 新手入门
-1. 阅读本README
-2. 运行简单RSI策略
-3. 理解Dashboard各项指标
-4. 在testnet测试1-2周
-
-### 进阶学习
-1. 阅读 `STRATEGY_GUIDE.md`
-2. 理解多因子选币原理
-3. 学习风险管理系统
-4. 运行专业级系统
-
-### 深入研究
-1. 研究学术论文
-2. 调整策略参数
-3. 添加自定义因子
-4. 开发新的策略模块
+- `CLAUDE.md` - 项目开发指南
+- `DEPLOYMENT.md` - 详细部署文档
+- `STRATEGY_GUIDE.md` - 策略详解
+- `BUG_FIXES_REPORT.md` - Bug修复记录
 
 ---
 
 ## 🤝 贡献
 
 欢迎提交Issue和PR！
-
-### Bug修复
-见 `BUG_FIXES_REPORT.md`
-
-### 新功能
-请先创建Issue讨论
-
----
-
-## 📞 支持
-
-- 📖 文档：`STRATEGY_GUIDE.md`
-- 🐛 Bug报告：GitHub Issues
-- 💬 讨论：GitHub Discussions
 
 ---
 
@@ -309,13 +361,6 @@ MIT License
 
 ---
 
-## 🎉 致谢
-
-感谢所有贡献者和使用者！
-
 **祝交易顺利！** 🚀
 
----
-
-*最后更新：2026-01-08*
-
+*最后更新: 2026-01-11*
