@@ -7,7 +7,7 @@
 Quant-bot 是一个专业级加密货币量化交易系统，支持 Binance 交易所。
 
 ### 核心特性
-- 多策略支持（RSI均值回归、Robust RSI、专业多策略）
+- 多策略支持（**激进动量策略**、RSI均值回归、Robust RSI、专业多策略）
 - 完善的风险管理（止损止盈、Kelly仓位、VaR控制）
 - Web Dashboard 实时监控
 - Docker 容器化部署
@@ -20,11 +20,14 @@ Quant-bot 是一个专业级加密货币量化交易系统，支持 Binance 交�
 ```
 Quant-bot/
 ├── 核心策略文件
+│   ├── aggressive_momentum_strategy.py  # 激进动量策略（默认，高收益追求）
+│   ├── run_aggressive_strategy.py       # 激进策略运行器
 │   ├── strategy.py              # 简单RSI均值回归策略
 │   ├── robust_strategy.py       # Robust RSI策略（高夏普比率）
 │   ├── professional_strategy.py # 专业多策略系统
 │   ├── run_strategy.py          # RSI策略运行器
 │   ├── run_robust_strategy.py   # Robust策略运行器
+│   ├── backtest_aggressive.py   # 激进策略回测脚本
 │
 ├── 交易所和数据
 │   ├── exchange.py              # Binance API 封装
@@ -67,13 +70,32 @@ Quant-bot/
 
 ## 策略说明
 
+### 0. 激进动量策略 (aggressive_momentum_strategy.py) ⚡默认
+- **适用人群**: 追求高收益、能承受高风险的用户
+- **目标**: 2个月100%收益（高风险高回报）
+- **核心逻辑**:
+  - 动量追踪 - 追涨最强势币种
+  - 多因子选币 - 动量+RSI+MACD+趋势综合评分
+  - 激进仓位 - 高确定性信号时最高50%仓位
+  - 快速轮动 - 每4小时评估换入更强币种
+  - 跟踪止盈 - 锁定利润，最大化收益
+- **风险控制**:
+  - 硬止损: 3%
+  - 跟踪止盈: 从高点回撤2%
+  - 最大单仓: 50%
+  - 最大总仓: 80%
+  - 每日亏损限制: 5%
+  - 最大回撤限制: 15%
+- **运行命令**: `python run_aggressive_strategy.py`
+- **回测验证**: `python backtest_aggressive.py`
+
 ### 1. 简单RSI策略 (strategy.py)
 - **适用人群**: 新手、小额资金
 - **核心逻辑**: RSI < 30 买入，RSI > 70 卖出
 - **风险控制**: 止损3%，止盈5%，最大持仓2个
 - **运行命令**: `python run_strategy.py`
 
-### 2. Robust RSI策略 (robust_strategy.py) ⭐推荐
+### 2. Robust RSI策略 (robust_strategy.py)
 - **适用人群**: 追求稳定收益的用户
 - **特点**:
   - 多时间框架确认 (1H + 4H)
@@ -101,10 +123,13 @@ Quant-bot/
 ### 本地运行切换
 
 ```bash
+# 运行激进动量策略（默认，高收益追求）
+python run_aggressive_strategy.py
+
 # 运行简单RSI策略
 python run_strategy.py
 
-# 运行Robust RSI策略（推荐）
+# 运行Robust RSI策略
 python run_robust_strategy.py
 
 # 运行专业多策略
@@ -115,19 +140,21 @@ python professional_strategy.py
 
 ```bash
 # 方式1: 使用profile启动特定策略
+docker-compose --profile aggressive up -d  # 激进动量（默认）
 docker-compose --profile rsi up -d         # 简单RSI
 docker-compose --profile robust up -d      # Robust RSI
 docker-compose --profile professional up -d # 专业多策略
 docker-compose --profile all up -d         # 全部策略
 
 # 方式2: 直接指定服务
+docker-compose up -d aggressive-strategy dashboard  # 默认
 docker-compose up -d rsi-strategy dashboard
 docker-compose up -d robust-strategy dashboard
 docker-compose up -d professional-strategy dashboard
 
 # 停止当前策略并切换
 docker-compose down
-docker-compose up -d robust-strategy dashboard
+docker-compose up -d aggressive-strategy dashboard
 ```
 
 ---
@@ -343,7 +370,8 @@ docker-compose logs rsi-strategy     # 查看错误日志
 - v2.0: 添加专业多策略系统
 - v2.1: 添加Robust RSI策略，修复Bug
 - v2.2: Docker部署，CI/CD自动化
+- **v3.0**: 添加激进动量策略（高收益追求，目标2个月100%）
 
 ---
 
-*最后更新: 2026-01-11*
+*最后更新: 2026-01-13*

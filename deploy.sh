@@ -77,11 +77,11 @@ docker image prune -f || true
 
 # 构建新镜像
 log_step "构建 Docker 镜像..."
-docker-compose build --no-cache
+docker-compose build --no-cache aggressive-strategy dashboard
 
-# 启动服务
+# 启动服务 - 默认只启动激进策略和Dashboard
 log_step "启动服务..."
-docker-compose up -d
+docker-compose up -d aggressive-strategy dashboard
 
 # 等待服务启动
 log_step "等待服务启动..."
@@ -99,18 +99,11 @@ docker-compose logs --tail=20
 log_step "运行健康检查..."
 HEALTHY=true
 
-# 检查策略容器
-if docker-compose ps | grep -q "quant-rsi-strategy.*Up"; then
-    log_info "✅ RSI策略容器运行正常"
+# 检查激进策略容器（默认策略）
+if docker-compose ps | grep -q "quant-aggressive-strategy.*Up"; then
+    log_info "✅ 激进动量策略容器运行正常"
 else
-    log_warn "❌ RSI策略容器未运行"
-    HEALTHY=false
-fi
-
-if docker-compose ps | grep -q "quant-professional-strategy.*Up"; then
-    log_info "✅ 专业策略容器运行正常"
-else
-    log_warn "❌ 专业策略容器未运行"
+    log_warn "❌ 激进动量策略容器未运行"
     HEALTHY=false
 fi
 

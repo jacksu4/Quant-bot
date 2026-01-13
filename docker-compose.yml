@@ -4,17 +4,49 @@ version: '3.8'
 # Quant-bot Docker Compose 配置
 # ============================================================================
 # 策略选择说明：
-#   1. 简单RSI策略 (rsi-strategy)     - 适合新手，端口8501
-#   2. Robust RSI策略 (robust-strategy) - 高夏普比率，端口8501
-#   3. 专业多策略 (professional-strategy) - 5策略组合，端口8502
+#   1. 激进动量策略 (aggressive-strategy) - 高收益追求，默认启动
+#   2. 简单RSI策略 (rsi-strategy)         - 适合新手
+#   3. Robust RSI策略 (robust-strategy)   - 高夏普比率
+#   4. 专业多策略 (professional-strategy) - 5策略组合
 #
-# 默认启动所有策略，可通过以下方式选择性启动：
+# 默认启动激进策略，可通过以下方式选择性启动：
+#   docker-compose up -d aggressive-strategy dashboard  # 默认
 #   docker-compose up -d rsi-strategy dashboard
 #   docker-compose up -d robust-strategy dashboard
 #   docker-compose up -d professional-strategy dashboard
 # ============================================================================
 
 services:
+  # ========== 默认策略: 激进动量策略 (高收益追求) ==========
+  aggressive-strategy:
+    build:
+      context: .
+      dockerfile: Dockerfile.aggressive
+    container_name: quant-aggressive-strategy
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - quant-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; log_file='/app/data/aggressive_strategy_log.json'; exit(0 if os.path.exists(log_file) and time.time() - os.path.getmtime(log_file) < 300 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - aggressive
+      - default
+      - all
+
   # ========== 策略1: 简单RSI均值回归策略 ==========
   rsi-strategy:
     build:
