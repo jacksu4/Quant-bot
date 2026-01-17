@@ -1,5 +1,21 @@
 """
-交易所API封装模块 - 支持真实交易和测试网
+Exchange API Wrapper Module / 交易所API封装模块
+
+Supports both live trading and testnet modes for Binance exchange.
+支持Binance交易所的真实交易和测试网模式。
+
+Key Features / 核心功能:
+- Automatic testnet/live mode switching based on TRADING_MODE env var
+- RSI calculation for trading signals
+- Position management and P&L tracking
+- Market order execution (buy/sell)
+- Balance and ticker queries
+
+Usage / 使用方法:
+    from exchange import BinanceClient
+    client = BinanceClient()
+    print(client.get_mode_str())  # Check current mode
+    balance = client.get_balance()  # Get account balance
 """
 
 import os
@@ -66,13 +82,11 @@ class BinanceClient:
 
     def get_all_tickers(self) -> dict:
         """获取白名单交易对价格"""
-        tickers = {}
-        for symbol in self.whitelist:
-            try:
-                tickers[symbol] = self.exchange.fetch_ticker(symbol)
-            except Exception:
-                pass
-        return tickers
+        return {
+            symbol: ticker
+            for symbol in self.whitelist
+            if (ticker := self._safe_call(lambda s=symbol: self.exchange.fetch_ticker(s))) is not None
+        }
 
     def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> list:
         """
@@ -87,85 +101,62 @@ class BinanceClient:
             return []
 
     def calculate_rsi(self, symbol: str, period: int = 14, timeframe: str = '1h') -> float:
-        """
-        计算RSI指标
-        RSI = 100 - (100 / (1 + RS))
-        RS = 平均上涨幅度 / 平均下跌幅度
-        """
+        """计算RSI指标"""
         ohlcv = self.get_ohlcv(symbol, timeframe, limit=period + 10)
-
         if len(ohlcv) < period + 1:
-            return 50.0  # 数据不足返回中性值
+            return 50.0
 
-        closes = [candle[4] for candle in ohlcv]  # 收盘价
+        closes = [candle[4] for candle in ohlcv]
+        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
 
-        gains = []
-        losses = []
+        gains = [max(d, 0) for d in deltas[-period:]]
+        losses = [abs(min(d, 0)) for d in deltas[-period:]]
 
-        for i in range(1, len(closes)):
-            change = closes[i] - closes[i-1]
-            if change > 0:
-                gains.append(change)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(abs(change))
-
-        # 使用最近 period 个数据
-        recent_gains = gains[-period:]
-        recent_losses = losses[-period:]
-
-        avg_gain = sum(recent_gains) / period
-        avg_loss = sum(recent_losses) / period
+        avg_gain, avg_loss = sum(gains) / period, sum(losses) / period
 
         if avg_loss == 0:
-            if avg_gain == 0:
-                return 50.0  # No price movement - neutral
-            return 100.0  # All gains, no losses - extremely overbought
+            return 100.0 if avg_gain > 0 else 50.0
 
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
+        rsi = 100 - (100 / (1 + avg_gain / avg_loss))
         return round(rsi, 2)
 
     def get_all_rsi(self, timeframe: str = '1h') -> dict:
         """获取所有白名单币种的RSI"""
         rsi_data = {}
         for symbol in self.whitelist:
-            try:
-                rsi_data[symbol] = self.calculate_rsi(symbol, timeframe=timeframe)
-            except Exception as e:
-                print(f"计算RSI失败 {symbol}: {e}")
-                rsi_data[symbol] = 50.0
+            rsi_data[symbol] = self._safe_call(
+                lambda s=symbol: self.calculate_rsi(s, timeframe=timeframe),
+                default=50.0
+            )
         return rsi_data
+
+    def _safe_call(self, func, default=None):
+        """安全执行函数，失败时返回默认值"""
+        try:
+            return func()
+        except Exception:
+            return default
 
     def get_trades(self, symbol: str, limit: int = 50) -> list:
         """获取交易历史"""
-        try:
-            return self.exchange.fetch_my_trades(symbol, limit=limit)
-        except Exception:
-            return []
+        return self._safe_call(lambda: self.exchange.fetch_my_trades(symbol, limit=limit), [])
 
     def get_all_trades(self, limit: int = 50) -> list:
         """获取所有交易对的交易历史"""
-        all_trades = []
-        for symbol in self.whitelist:
-            try:
-                trades = self.exchange.fetch_my_trades(symbol, limit=limit)
-                all_trades.extend(trades)
-            except Exception:
-                pass
-        all_trades.sort(key=lambda x: x['timestamp'], reverse=True)
-        return all_trades
+        all_trades = [
+            trade
+            for symbol in self.whitelist
+            if (trades := self._safe_call(lambda s=symbol: self.exchange.fetch_my_trades(s, limit=limit), []))
+            for trade in trades
+        ]
+        return sorted(all_trades, key=lambda x: x['timestamp'], reverse=True)
 
     def get_open_orders(self, symbol: str = None) -> list:
         """获取未成交订单"""
-        try:
-            if symbol:
-                return self.exchange.fetch_open_orders(symbol)
-            return self.exchange.fetch_open_orders()
-        except Exception:
-            return []
+        return self._safe_call(
+            lambda: self.exchange.fetch_open_orders(symbol) if symbol else self.exchange.fetch_open_orders(),
+            []
+        )
 
     def create_market_buy(self, symbol: str, amount: float) -> dict:
         """市价买入（按币种数量）"""

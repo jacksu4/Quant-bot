@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-激进动量策略回测脚本
+激进动量策略回测脚本 v2.1
 
 使用历史数据验证策略的表现
+参数与 aggressive_momentum_strategy.py v2.1 保持同步
 """
 
 import numpy as np
@@ -14,22 +15,29 @@ from exchange import BinanceClient
 from indicators import TechnicalIndicators
 
 
-# 策略参数（与 aggressive_momentum_strategy.py 保持一致）
-MOMENTUM_LOOKBACK_SHORT = 7
+# 策略参数（与 aggressive_momentum_strategy.py v2.1 保持一致）
+MOMENTUM_LOOKBACK_SHORT = 6      # Synced with v2.1
 MOMENTUM_LOOKBACK_MEDIUM = 24
 MOMENTUM_LOOKBACK_LONG = 72
 RSI_PERIOD = 14
-RSI_BUY_THRESHOLD = 40
+RSI_BUY_THRESHOLD = 45           # Synced with v2.1
 RSI_SELL_THRESHOLD = 70
 EMA_FAST = 8
 EMA_SLOW = 21
 EMA_TREND = 50
-MAX_SINGLE_POSITION_PCT = 0.50
-MAX_TOTAL_POSITION_PCT = 0.80
-HARD_STOP_LOSS_PCT = 3.0
+MAX_SINGLE_POSITION_PCT = 0.30   # Synced with v2.1 (reduced from 0.50)
+MAX_TOTAL_POSITION_PCT = 0.65    # Synced with v2.1 (reduced from 0.80)
+HARD_STOP_LOSS_PCT = 3.5         # Synced with v2.1
 TRAILING_STOP_PCT = 2.0
-MIN_TAKE_PROFIT_PCT = 3.0
-AGGRESSIVE_TAKE_PROFIT_PCT = 8.0
+MIN_TAKE_PROFIT_PCT = 2.0        # Synced with v2.1 (was 3.0)
+AGGRESSIVE_TAKE_PROFIT_PCT = 12.0  # Synced with v2.1 (was 8.0)
+
+# v2.1: Partial profit taking levels
+PARTIAL_PROFIT_LEVELS = [
+    (3.0, 0.30),   # At 3% profit, sell 30%
+    (5.0, 0.35),   # At 5% profit, sell 35% of remaining
+    (8.0, 0.50),   # At 8% profit, sell 50% of remaining
+]
 
 
 def calculate_momentum(closes: List[float], period: int) -> float:
@@ -94,12 +102,13 @@ def calculate_coin_score(closes: List[float], highs: List[float], lows: List[flo
 
 
 class AggressiveBacktest:
-    """激进策略回测"""
+    """激进策略回测 v2.1"""
 
     def __init__(self, initial_capital: float = 600):
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.positions = {}  # {symbol: {'amount': x, 'entry_price': y, 'high_price': z}}
+        self.partial_sells = {}  # v2.1: Track which partial profit levels have been triggered
         self.trades = []
         self.equity_curve = []
         self.timestamps = []
@@ -147,33 +156,45 @@ class AggressiveBacktest:
         })
         return True
 
-    def sell(self, symbol: str, price: float, timestamp: datetime, reason: str):
-        """卖出全部持仓"""
+    def sell(self, symbol: str, price: float, timestamp: datetime, reason: str,
+              sell_portion: float = 1.0):
+        """卖出持仓 (v2.1: 支持部分卖出)"""
         if symbol not in self.positions:
             return False
 
         pos = self.positions[symbol]
+        sell_amount = pos['amount'] * sell_portion
         actual_price = price * (1 - self.slippage)
-        usdt_value = pos['amount'] * actual_price
+        usdt_value = sell_amount * actual_price
         cost = usdt_value * self.fee_rate
 
         net_proceeds = usdt_value - cost
-        pnl = net_proceeds - (pos['entry_price'] * pos['amount'])
+        pnl = net_proceeds - (pos['entry_price'] * sell_amount)
         pnl_pct = (actual_price - pos['entry_price']) / pos['entry_price'] * 100
 
         self.capital += net_proceeds
-        del self.positions[symbol]
+
+        # v2.1: Handle partial vs full sell
+        if sell_portion >= 1.0 or pos['amount'] - sell_amount < 0.0001:
+            # Full exit
+            del self.positions[symbol]
+            if symbol in self.partial_sells:
+                del self.partial_sells[symbol]
+        else:
+            # Partial exit - update remaining amount
+            self.positions[symbol]['amount'] = pos['amount'] - sell_amount
 
         self.trades.append({
             'timestamp': timestamp,
             'symbol': symbol,
-            'action': 'SELL',
+            'action': 'SELL' if sell_portion >= 1.0 else 'PARTIAL_SELL',
             'price': actual_price,
-            'amount': pos['amount'],
+            'amount': sell_amount,
             'usdt_value': net_proceeds,
             'pnl': pnl,
             'pnl_pct': pnl_pct,
-            'reason': reason
+            'reason': reason,
+            'sell_portion': sell_portion
         })
         return True
 
@@ -253,24 +274,42 @@ class AggressiveBacktest:
 
                 should_sell = False
                 sell_reason = ""
+                sell_portion = 1.0
 
-                # 硬止损
+                # 硬止损 - 全部卖出
                 if pnl_pct <= -HARD_STOP_LOSS_PCT:
                     should_sell = True
                     sell_reason = f"STOP_LOSS ({pnl_pct:.2f}%)"
+                    sell_portion = 1.0
 
-                # 跟踪止盈
-                elif pnl_pct > MIN_TAKE_PROFIT_PCT and drawdown_from_high > TRAILING_STOP_PCT:
+                # v2.1: 部分止盈 - 分批卖出
+                elif pnl_pct > 0:
+                    partial_sells = self.partial_sells.get(symbol, set())
+                    for level_pct, portion in PARTIAL_PROFIT_LEVELS:
+                        if pnl_pct >= level_pct and level_pct not in partial_sells:
+                            should_sell = True
+                            sell_reason = f"PARTIAL_PROFIT ({pnl_pct:.2f}% >= {level_pct}%)"
+                            sell_portion = portion
+                            # 记录已触发的止盈水平
+                            if symbol not in self.partial_sells:
+                                self.partial_sells[symbol] = set()
+                            self.partial_sells[symbol].add(level_pct)
+                            break
+
+                # 跟踪止盈 - 全部卖出
+                if not should_sell and pnl_pct > MIN_TAKE_PROFIT_PCT and drawdown_from_high > TRAILING_STOP_PCT:
                     should_sell = True
                     sell_reason = f"TRAILING_STOP ({pnl_pct:.2f}%)"
+                    sell_portion = 1.0
 
-                # 激进止盈
-                elif pnl_pct >= AGGRESSIVE_TAKE_PROFIT_PCT:
+                # 激进止盈 - 全部卖出
+                if not should_sell and pnl_pct >= AGGRESSIVE_TAKE_PROFIT_PCT:
                     should_sell = True
                     sell_reason = f"TAKE_PROFIT ({pnl_pct:.2f}%)"
+                    sell_portion = 1.0
 
                 if should_sell:
-                    self.sell(symbol, price, timestamp, sell_reason)
+                    self.sell(symbol, price, timestamp, sell_reason, sell_portion)
 
             # 检查买入条件
             position_value = sum(
