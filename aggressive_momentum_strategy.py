@@ -1,30 +1,45 @@
 """
-激进动量策略 - 高收益追求版本
+Aggressive Momentum Strategy v2.1 / 激进动量策略 v2.1
+=====================================================
 
-目标：2个月100%收益（非常激进，高风险高回报）
+Target: 100% return in 2 months (high risk, high reward)
+目标：2个月内实现100%收益（高风险高回报）
 
-策略核心逻辑：
+v2.1 Improvements / v2.1 优化 (2026-01-17):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. 动量追踪 - 追涨最强势的币种
-2. 多因子选币 - 综合动量、相对强度、技术指标
-3. 激进仓位 - 高确定性信号时使用大仓位(最高50%)
-4. 快速轮动 - 每小时评估，及时换入更强的币种
-5. 动态止盈止损 - 跟踪止盈锁定利润，紧急止损控制风险
-6. 波动率利用 - 高波动期加大仓位
+1. Pullback Entry - Wait for dips in uptrends instead of chasing
+   回调入场 - 在上升趋势中等待回调，而非追涨
+2. RSI Divergence Detection - Spot reversals early
+   RSI背离检测 - 提前发现反转信号
+3. Partial Profit Taking - Scale out at 3%, 5%, 8%
+   分批止盈 - 在3%、5%、8%时分批获利了结
+4. OBV Confirmation - Validate price moves with volume
+   OBV确认 - 用量价验证价格走势
+5. Reduced Position Size - 30% max single (safer for small accounts)
+   降低仓位 - 单仓最高30%（小账户更安全）
+6. Time-Based Exit - Close stale positions after 48h without profit
+   时间止损 - 48小时无盈利则平仓
+7. Correlation Filter - Avoid highly correlated positions
+   相关性过滤 - 避免高度相关的持仓
 
-风险控制：
-- 单仓最大50%
-- 总仓位最大80%
-- 每日亏损5%熔断
-- 最大回撤15%熔断
-- 紧急止损3%
+v2.0 Features (retained):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Market Regime Filter / 市场状态过滤
+- ATR-Based Dynamic Stops / ATR动态止损
+- Momentum Acceleration / 动量加速度
+- Volume Breakout Detection / 成交量突破检测
+- Volatility-Adjusted Sizing / 波动率调整仓位
 
-目标性能（激进市场条件下）：
-- 月收益: 30-50%
-- 胜率: > 50%
-- 夏普比率: > 1.5
+Risk Controls / 风险控制:
+- Market regime filter: Reduce exposure in bear markets
+- ATR-based stops: 1.5-2x ATR for stop loss
+- Max single position: 30% (reduced from 40%)
+- Max total exposure: 65% (reduced from 70%)
+- Daily loss limit: 5%
+- Max drawdown: 12%
 
-⚠️  警告：此策略风险极高，仅适用于能承受高风险的投资者
+⚠️ WARNING: This is a high-risk strategy. Only use with capital you can afford to lose.
+⚠️ 警告：此策略风险极高，仅使用你能承受损失的资金。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -34,63 +49,108 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from exchange import BinanceClient
-from indicators import TechnicalIndicators
+from indicators import TechnicalIndicators, calculate_correlation
 
 # ============================================================================
-# 策略参数配置
+# STRATEGY PARAMETERS v2.1 / 策略参数配置 v2.1
 # ============================================================================
 
-# 动量参数
-MOMENTUM_LOOKBACK_SHORT = 7    # 短期动量（小时）
-MOMENTUM_LOOKBACK_MEDIUM = 24  # 中期动量（小时）
-MOMENTUM_LOOKBACK_LONG = 72    # 长期动量（小时）
-MOMENTUM_THRESHOLD = 0.5       # 动量阈值（%）
+# --- Momentum Parameters / 动量参数 ---
+MOMENTUM_LOOKBACK_SHORT = 6    # Short-term momentum (hours)
+MOMENTUM_LOOKBACK_MEDIUM = 24  # Medium-term momentum (hours)
+MOMENTUM_LOOKBACK_LONG = 72    # Long-term momentum (hours)
+MOMENTUM_THRESHOLD = 0.3       # Minimum momentum to consider (%)
+MOMENTUM_ACCELERATION_WEIGHT = 0.3  # Weight for momentum acceleration in scoring
 
-# RSI参数
+# --- RSI Parameters / RSI参数 ---
 RSI_PERIOD = 14
-RSI_BUY_THRESHOLD = 40         # RSI低于此值考虑买入（比传统30更激进）
-RSI_SELL_THRESHOLD = 70        # RSI高于此值考虑卖出
-RSI_STRONG_BUY = 30            # 强买入信号
+RSI_BUY_THRESHOLD = 45         # Buy threshold in uptrend
+RSI_SELL_THRESHOLD = 70
+RSI_STRONG_BUY = 35            # Strong buy when RSI is recovering from oversold
+RSI_OVERSOLD = 30              # True oversold level
+RSI_PULLBACK_ZONE = (35, 50)   # v2.1: Ideal pullback entry zone
 
-# EMA参数
-EMA_FAST = 8                   # 快速EMA
-EMA_SLOW = 21                  # 慢速EMA
-EMA_TREND = 50                 # 趋势EMA
+# --- EMA Parameters / EMA参数 ---
+EMA_FAST = 8
+EMA_SLOW = 21
+EMA_TREND = 50
 
-# 仓位管理
-MAX_SINGLE_POSITION_PCT = 0.50   # 单仓最大50%
-MAX_TOTAL_POSITION_PCT = 0.80    # 总仓位最大80%
-MIN_TRADE_USDT = 6.0             # 最小交易额
-BASE_POSITION_PCT = 0.30         # 基础仓位30%
+# --- ATR Parameters / ATR参数 ---
+ATR_PERIOD = 14
+ATR_STOP_MULTIPLIER = 2.0      # Stop loss at 2x ATR
+ATR_PROFIT_MULTIPLIER = 3.0    # Take profit at 3x ATR (1.5:1 risk/reward)
 
-# 止损止盈
-HARD_STOP_LOSS_PCT = 3.0         # 硬止损3%
-TRAILING_STOP_PCT = 2.0          # 跟踪止盈回撤2%
-MIN_TAKE_PROFIT_PCT = 3.0        # 最小止盈3%
-AGGRESSIVE_TAKE_PROFIT_PCT = 8.0 # 激进止盈8%
+# --- Position Sizing v2.1 / 仓位管理 v2.1 ---
+MAX_SINGLE_POSITION_PCT = 0.30   # v2.1: Reduced from 40% - safer for small accounts
+MAX_TOTAL_POSITION_PCT = 0.65    # v2.1: Reduced from 70%
+MIN_TRADE_USDT = 6.0
+BASE_POSITION_PCT = 0.20         # v2.1: Reduced base position to 20%
+VOLATILITY_TARGET = 2.0          # Target 2% daily volatility per position
 
-# 风控参数
-DAILY_LOSS_LIMIT_PCT = 5.0       # 每日亏损限制5%
-MAX_DRAWDOWN_PCT = 15.0          # 最大回撤限制15%
+# --- Stop Loss & Take Profit v2.1 / 止损止盈 v2.1 ---
+HARD_STOP_LOSS_PCT = 3.5         # v2.1: Tighter stop loss
+TRAILING_STOP_ATR_MULT = 1.5     # Trailing stop at 1.5x ATR (dynamic)
+MIN_TAKE_PROFIT_PCT = 2.0        # v2.1: Earlier trailing activation
 
-# 轮动参数
-ROTATION_INTERVAL_HOURS = 4      # 每4小时评估轮动
-MIN_ROTATION_IMPROVEMENT = 2.0   # 最小轮动提升（分数）
+# v2.1: Partial profit taking levels / 分批止盈水平
+PARTIAL_PROFIT_LEVELS = [
+    (3.0, 0.30),   # At 3% profit, sell 30%
+    (5.0, 0.35),   # At 5% profit, sell 35% of remaining
+    (8.0, 0.50),   # At 8% profit, sell 50% of remaining
+]
+AGGRESSIVE_TAKE_PROFIT_PCT = 12.0  # v2.1: Full exit at 12% (remaining position)
 
-# 日志文件
+# --- Risk Management v2.1 / 风控参数 v2.1 ---
+DAILY_LOSS_LIMIT_PCT = 5.0
+MAX_DRAWDOWN_PCT = 12.0          # Tighter drawdown limit
+
+# --- Market Regime / 市场状态 ---
+REGIME_BULL_THRESHOLD = 0.5      # BTC momentum > 0.5% = bullish
+REGIME_BEAR_THRESHOLD = -0.5     # BTC momentum < -0.5% = bearish
+BEAR_MARKET_POSITION_MULT = 0.5  # Reduce positions by 50% in bear market
+
+# --- Volume Parameters / 成交量参数 ---
+VOLUME_SURGE_THRESHOLD = 2.0     # Volume 2x average = surge
+VOLUME_BREAKOUT_BONUS = 10       # Bonus score for volume breakout
+
+# --- Rotation Parameters / 轮动参数 ---
+ROTATION_INTERVAL_HOURS = 6      # Less frequent rotation
+MIN_ROTATION_IMPROVEMENT = 3.0   # Higher threshold for rotation
+
+# --- v2.1: Time-Based Exit / 时间止损 ---
+STALE_POSITION_HOURS = 48        # Close positions without profit after 48h
+STALE_POSITION_MIN_LOSS = -1.0   # Only close if loss is > -1%
+
+# --- v2.1: Correlation Filter / 相关性过滤 ---
+MAX_CORRELATION = 0.85           # Avoid positions with correlation > 85%
+
+# --- v2.1: Pullback Entry / 回调入场 ---
+PULLBACK_ENABLED = True          # Enable pullback entry logic
+PULLBACK_RSI_DIP = 5             # RSI must dip by at least 5 points from recent high
+
+# --- Data Files / 数据文件 ---
 LOG_FILE = 'data/aggressive_strategy_log.json'
 EQUITY_FILE = 'data/aggressive_equity_history.json'
 
 
 def calculate_momentum(closes: List[float], period: int) -> float:
-    """计算动量（百分比变化）"""
+    """Calculate momentum (percentage change)"""
     if len(closes) < period + 1:
         return 0.0
     return ((closes[-1] - closes[-period]) / closes[-period]) * 100
 
 
+def calculate_momentum_acceleration(closes: List[float], period: int) -> float:
+    """Calculate momentum acceleration (rate of change of momentum)"""
+    if len(closes) < period * 2 + 1:
+        return 0.0
+    current_mom = calculate_momentum(closes, period)
+    prev_mom = calculate_momentum(closes[:-period], period)
+    return current_mom - prev_mom
+
+
 def calculate_volatility(closes: List[float], period: int = 20) -> float:
-    """计算波动率（标准差）"""
+    """Calculate volatility (standard deviation of returns)"""
     if len(closes) < period:
         return 0.0
     returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
@@ -99,8 +159,207 @@ def calculate_volatility(closes: List[float], period: int = 20) -> float:
     return np.std(returns[-period:]) * 100
 
 
+def calculate_atr(highs: List[float], lows: List[float], closes: List[float],
+                  period: int = 14) -> float:
+    """Calculate Average True Range"""
+    if len(closes) < period + 1:
+        return 0.0
+
+    true_ranges = []
+    for i in range(1, len(closes)):
+        high_low = highs[i] - lows[i]
+        high_close = abs(highs[i] - closes[i-1])
+        low_close = abs(lows[i] - closes[i-1])
+        true_ranges.append(max(high_low, high_close, low_close))
+
+    if len(true_ranges) < period:
+        return np.mean(true_ranges) if true_ranges else 0.0
+    return np.mean(true_ranges[-period:])
+
+
+def detect_volume_breakout(volumes: List[float], period: int = 20) -> Tuple[bool, float]:
+    """Detect volume breakout (volume surge)"""
+    if len(volumes) < period + 1:
+        return False, 1.0
+    avg_volume = np.mean(volumes[-period-1:-1])
+    if avg_volume <= 0:
+        return False, 1.0
+    volume_ratio = volumes[-1] / avg_volume
+    return volume_ratio >= VOLUME_SURGE_THRESHOLD, volume_ratio
+
+
+# ============================================================================
+# v2.1 NEW HELPER FUNCTIONS / v2.1 新增辅助函数
+# ============================================================================
+
+def detect_rsi_divergence(closes: List[float], rsi_values: List[float],
+                          lookback: int = 10) -> Tuple[str, float]:
+    """
+    Detect RSI divergence (bullish or bearish)
+    检测RSI背离（看涨或看跌）
+
+    Returns:
+        (divergence_type, strength)
+        divergence_type: 'BULLISH', 'BEARISH', or 'NONE'
+        strength: divergence strength (0-1)
+    """
+    if len(closes) < lookback + 2 or len(rsi_values) < lookback + 2:
+        return 'NONE', 0.0
+
+    # Find recent price lows/highs
+    recent_closes = closes[-lookback:]
+    recent_rsi = rsi_values[-lookback:]
+
+    # Find local minima and maxima
+    price_low_idx = np.argmin(recent_closes)
+    price_high_idx = np.argmax(recent_closes)
+
+    # Check for bullish divergence: price making lower lows, RSI making higher lows
+    if price_low_idx > lookback // 2:  # Recent low
+        # Compare with earlier low
+        earlier_closes = closes[-(lookback*2):-lookback]
+        earlier_rsi = rsi_values[-(lookback*2):-lookback]
+
+        if len(earlier_closes) >= lookback // 2:
+            earlier_low = min(earlier_closes)
+            current_low = min(recent_closes)
+
+            earlier_rsi_at_low = min(earlier_rsi)
+            current_rsi_at_low = min(recent_rsi)
+
+            # Bullish: price lower, RSI higher
+            if current_low < earlier_low and current_rsi_at_low > earlier_rsi_at_low:
+                price_diff = (earlier_low - current_low) / earlier_low
+                rsi_diff = current_rsi_at_low - earlier_rsi_at_low
+                strength = min(1.0, (price_diff * 100 + rsi_diff) / 20)
+                return 'BULLISH', strength
+
+    # Check for bearish divergence: price making higher highs, RSI making lower highs
+    if price_high_idx > lookback // 2:  # Recent high
+        earlier_closes = closes[-(lookback*2):-lookback]
+        earlier_rsi = rsi_values[-(lookback*2):-lookback]
+
+        if len(earlier_closes) >= lookback // 2:
+            earlier_high = max(earlier_closes)
+            current_high = max(recent_closes)
+
+            earlier_rsi_at_high = max(earlier_rsi)
+            current_rsi_at_high = max(recent_rsi)
+
+            # Bearish: price higher, RSI lower
+            if current_high > earlier_high and current_rsi_at_high < earlier_rsi_at_high:
+                price_diff = (current_high - earlier_high) / earlier_high
+                rsi_diff = earlier_rsi_at_high - current_rsi_at_high
+                strength = min(1.0, (price_diff * 100 + rsi_diff) / 20)
+                return 'BEARISH', strength
+
+    return 'NONE', 0.0
+
+
+def calculate_obv_trend(closes: List[float], volumes: List[float],
+                        period: int = 14) -> Tuple[str, float]:
+    """
+    Calculate OBV (On-Balance Volume) trend
+    计算OBV能量潮趋势
+
+    Returns:
+        (trend, strength)
+        trend: 'UP', 'DOWN', or 'NEUTRAL'
+        strength: trend strength (0-1)
+    """
+    if len(closes) < period + 1 or len(volumes) < period + 1:
+        return 'NEUTRAL', 0.0
+
+    # Calculate OBV
+    obv = TechnicalIndicators.obv(closes, volumes)
+
+    if len(obv) < period:
+        return 'NEUTRAL', 0.0
+
+    # Calculate OBV EMA
+    obv_ema = TechnicalIndicators.ema(obv, period)
+
+    # Check trend
+    recent_obv = obv[-1]
+    recent_obv_ema = obv_ema[-1]
+
+    # Calculate slope
+    obv_slope = (obv[-1] - obv[-min(5, len(obv))]) / max(abs(obv[-min(5, len(obv))]), 1)
+
+    if recent_obv > recent_obv_ema and obv_slope > 0:
+        strength = min(1.0, abs(obv_slope) * 10)
+        return 'UP', strength
+    elif recent_obv < recent_obv_ema and obv_slope < 0:
+        strength = min(1.0, abs(obv_slope) * 10)
+        return 'DOWN', strength
+
+    return 'NEUTRAL', 0.0
+
+
+def detect_pullback_entry(rsi_history: List[float], current_rsi: float,
+                          trend: str) -> Tuple[bool, str]:
+    """
+    Detect pullback entry opportunity in an uptrend
+    检测上升趋势中的回调入场机会
+
+    Returns:
+        (is_pullback_entry, reason)
+    """
+    if not PULLBACK_ENABLED or trend != 'UP':
+        return False, ""
+
+    if len(rsi_history) < 10:
+        return False, ""
+
+    # Find recent RSI high
+    recent_rsi_high = max(rsi_history[-10:])
+
+    # Check if RSI has dipped from recent high
+    rsi_dip = recent_rsi_high - current_rsi
+
+    # Check if current RSI is in the pullback zone
+    in_pullback_zone = RSI_PULLBACK_ZONE[0] <= current_rsi <= RSI_PULLBACK_ZONE[1]
+
+    if in_pullback_zone and rsi_dip >= PULLBACK_RSI_DIP:
+        return True, f"RSI pullback from {recent_rsi_high:.1f} to {current_rsi:.1f}"
+
+    return False, ""
+
+
+def check_position_correlation(new_symbol: str, existing_positions: List[Dict],
+                               price_data: Dict[str, List[float]]) -> Tuple[bool, float]:
+    """
+    Check if new position would be too correlated with existing positions
+    检查新仓位是否与现有仓位过度相关
+
+    Returns:
+        (is_ok, max_correlation)
+    """
+    if not existing_positions:
+        return True, 0.0
+
+    if new_symbol not in price_data:
+        return True, 0.0
+
+    new_prices = price_data[new_symbol]
+    max_corr = 0.0
+
+    for pos in existing_positions:
+        pos_symbol = pos.get('symbol', '')
+        if pos_symbol in price_data:
+            pos_prices = price_data[pos_symbol]
+
+            # Ensure same length
+            min_len = min(len(new_prices), len(pos_prices))
+            if min_len >= 20:
+                corr = abs(calculate_correlation(new_prices[-min_len:], pos_prices[-min_len:]))
+                max_corr = max(max_corr, corr)
+
+    return max_corr <= MAX_CORRELATION, max_corr
+
+
 def log_action(action: str, details: dict):
-    """记录策略动作"""
+    """Log strategy action"""
     os.makedirs('data', exist_ok=True)
 
     log_entry = {
@@ -118,7 +377,7 @@ def log_action(action: str, details: dict):
             logs = []
 
     logs.append(log_entry)
-    logs = logs[-2000:]  # 保留更多日志
+    logs = logs[-2000:]
 
     with open(LOG_FILE, 'w') as f:
         json.dump(logs, f, indent=2, default=str)
@@ -127,7 +386,7 @@ def log_action(action: str, details: dict):
 
 
 def get_logs(limit: int = 100) -> list:
-    """获取策略日志"""
+    """Get strategy logs"""
     if not os.path.exists(LOG_FILE):
         return []
     try:
@@ -139,55 +398,105 @@ def get_logs(limit: int = 100) -> list:
 
 
 class AggressiveMomentumStrategy:
-    """激进动量策略 - 高收益追求版"""
+    """Aggressive Momentum Strategy v2.1 - Optimized for higher win rate and better risk management"""
 
     def __init__(self, client: BinanceClient = None):
         self.client = client or BinanceClient()
-        self.position_entry_prices = {}  # 入场价格
-        self.position_high_prices = {}   # 持仓期间最高价（用于跟踪止盈）
-        self.last_rotation_time = None   # 上次轮动时间
-        self.daily_starting_value = None # 每日起始价值
-        self.daily_start_date = None     # 每日起始日期
+        self.position_entry_prices = {}
+        self.position_high_prices = {}
+        self.position_atr = {}  # Store ATR at entry for dynamic stops
+        self.position_entry_times = {}  # v2.1: Track entry time for time-based exit
+        self.position_partial_sells = {}  # v2.1: Track partial profit levels already triggered
+        self.last_rotation_time = None
+        self.daily_starting_value = None
+        self.daily_start_date = None
+        self.market_regime = 'NEUTRAL'  # BULL, BEAR, or NEUTRAL
+        self.btc_data = None  # Cache BTC data for regime detection
+        self.price_history = {}  # v2.1: Cache price history for correlation checks
+
+    def detect_market_regime(self) -> str:
+        """Detect overall market regime using BTC as proxy"""
+        try:
+            ohlcv = self.client.get_ohlcv('BTC/USDT', '4h', limit=50)
+            if len(ohlcv) < 30:
+                return 'NEUTRAL'
+
+            closes = [c[4] for c in ohlcv]
+
+            # Calculate BTC momentum
+            mom_short = calculate_momentum(closes, 6)  # 24h momentum
+            mom_medium = calculate_momentum(closes, 18)  # 72h momentum
+
+            # EMA trend
+            ema_fast = TechnicalIndicators.ema(closes, 8)[-1]
+            ema_slow = TechnicalIndicators.ema(closes, 21)[-1]
+
+            # Combined score
+            trend_score = mom_short * 0.5 + mom_medium * 0.3
+            if ema_fast > ema_slow:
+                trend_score += 1
+            else:
+                trend_score -= 1
+
+            if trend_score > REGIME_BULL_THRESHOLD:
+                self.market_regime = 'BULL'
+            elif trend_score < REGIME_BEAR_THRESHOLD:
+                self.market_regime = 'BEAR'
+            else:
+                self.market_regime = 'NEUTRAL'
+
+            return self.market_regime
+
+        except Exception as e:
+            print(f"  ⚠️ Market regime detection failed: {e}")
+            return 'NEUTRAL'
 
     def get_market_data(self, symbol: str) -> Optional[Dict]:
-        """获取市场数据并计算指标"""
+        """Get market data and calculate indicators"""
         try:
-            # 获取1小时K线（用于主要分析）
+            # Get 1-hour candles (main analysis)
             ohlcv_1h = self.client.get_ohlcv(symbol, '1h', limit=100)
             if len(ohlcv_1h) < 50:
                 return None
 
-            # 获取15分钟K线（用于入场时机）
+            # Get 15-minute candles (entry timing)
             ohlcv_15m = self.client.get_ohlcv(symbol, '15m', limit=50)
             if len(ohlcv_15m) < 20:
                 return None
 
-            # 获取4小时K线（用于趋势确认）
+            # Get 4-hour candles (trend confirmation)
             ohlcv_4h = self.client.get_ohlcv(symbol, '4h', limit=50)
             if len(ohlcv_4h) < 20:
                 return None
 
-            # 提取1小时数据
+            # Extract 1h data
             closes_1h = [c[4] for c in ohlcv_1h]
             highs_1h = [c[2] for c in ohlcv_1h]
             lows_1h = [c[3] for c in ohlcv_1h]
             volumes_1h = [c[5] for c in ohlcv_1h]
 
-            # 提取15分钟数据
+            # Extract 15m data
             closes_15m = [c[4] for c in ohlcv_15m]
 
-            # 提取4小时数据
+            # Extract 4h data
             closes_4h = [c[4] for c in ohlcv_4h]
+            highs_4h = [c[2] for c in ohlcv_4h]
+            lows_4h = [c[3] for c in ohlcv_4h]
 
             current_price = closes_1h[-1]
 
-            # 计算动量
+            # Calculate momentum
             momentum_short = calculate_momentum(closes_1h, MOMENTUM_LOOKBACK_SHORT)
             momentum_medium = calculate_momentum(closes_1h, MOMENTUM_LOOKBACK_MEDIUM)
             momentum_long = calculate_momentum(closes_1h, MOMENTUM_LOOKBACK_LONG)
 
-            # 综合动量得分（近期权重更高）
-            momentum_score = momentum_short * 0.5 + momentum_medium * 0.3 + momentum_long * 0.2
+            # NEW: Momentum acceleration
+            momentum_accel = calculate_momentum_acceleration(closes_1h, MOMENTUM_LOOKBACK_SHORT)
+
+            # Weighted momentum score (with acceleration bonus)
+            momentum_score = (momentum_short * 0.5 + momentum_medium * 0.3 + momentum_long * 0.2)
+            if momentum_accel > 0:
+                momentum_score += momentum_accel * MOMENTUM_ACCELERATION_WEIGHT
 
             # RSI
             rsi_1h = TechnicalIndicators.rsi(closes_1h, RSI_PERIOD)[-1]
@@ -204,15 +513,15 @@ class AggressiveMomentumStrategy:
             macd_signal = 0
             if len(dif) >= 2 and len(dea) >= 2:
                 if dif[-1] > dea[-1] and dif[-2] <= dea[-2]:
-                    macd_signal = 1  # 金叉
+                    macd_signal = 1  # Golden cross
                 elif dif[-1] < dea[-1] and dif[-2] >= dea[-2]:
-                    macd_signal = -1  # 死叉
+                    macd_signal = -1  # Death cross
                 elif dif[-1] > dea[-1]:
-                    macd_signal = 0.5  # DIF在DEA上方
+                    macd_signal = 0.5  # DIF above DEA
                 else:
-                    macd_signal = -0.5  # DIF在DEA下方
+                    macd_signal = -0.5  # DIF below DEA
 
-            # 布林带
+            # Bollinger Bands
             upper, middle, lower = TechnicalIndicators.bollinger_bands(closes_1h, 20, 2)
             bb_position = 0.5
             if not np.isnan(upper[-1]) and not np.isnan(lower[-1]):
@@ -220,21 +529,40 @@ class AggressiveMomentumStrategy:
                 if bb_width > 0:
                     bb_position = (current_price - lower[-1]) / bb_width
 
-            # 波动率
+            # Volatility
             volatility = calculate_volatility(closes_1h, 20)
 
-            # 成交量分析
+            # ATR (NEW - for dynamic stops)
+            atr_1h = calculate_atr(highs_1h, lows_1h, closes_1h, ATR_PERIOD)
+            atr_4h = calculate_atr(highs_4h, lows_4h, closes_4h, ATR_PERIOD)
+            atr_pct = (atr_1h / current_price) * 100 if current_price > 0 else 0
+
+            # Volume analysis (IMPROVED)
             avg_volume = np.mean(volumes_1h[-20:])
             volume_ratio = volumes_1h[-1] / avg_volume if avg_volume > 0 else 1.0
+            is_volume_breakout, _ = detect_volume_breakout(volumes_1h)
 
-            # 趋势强度 (ADX)
+            # Trend strength (ADX)
             adx_values = TechnicalIndicators.adx(highs_1h, lows_1h, closes_1h, 14)
             adx = adx_values[-1] if adx_values else 0
 
-            # 趋势判断
+            # Trend direction
             trend_1h = 'UP' if ema_fast > ema_slow else 'DOWN'
             trend_4h = 'UP' if closes_4h[-1] > TechnicalIndicators.ema(closes_4h, 21)[-1] else 'DOWN'
             overall_trend = 'UP' if current_price > ema_trend else 'DOWN'
+
+            # v2.1: OBV trend analysis
+            obv_trend, obv_strength = calculate_obv_trend(closes_1h, volumes_1h)
+
+            # v2.1: RSI divergence detection
+            rsi_history = TechnicalIndicators.rsi(closes_1h, RSI_PERIOD)
+            divergence_type, divergence_strength = detect_rsi_divergence(closes_1h, rsi_history)
+
+            # v2.1: Pullback detection
+            is_pullback, pullback_reason = detect_pullback_entry(rsi_history, rsi_1h, overall_trend)
+
+            # v2.1: Store price history for correlation checks
+            self.price_history[symbol] = closes_1h
 
             return {
                 'symbol': symbol,
@@ -242,10 +570,12 @@ class AggressiveMomentumStrategy:
                 'momentum_short': momentum_short,
                 'momentum_medium': momentum_medium,
                 'momentum_long': momentum_long,
+                'momentum_accel': momentum_accel,
                 'momentum_score': momentum_score,
                 'rsi_1h': rsi_1h,
                 'rsi_15m': rsi_15m,
                 'rsi_4h': rsi_4h,
+                'rsi_history': rsi_history,  # v2.1
                 'ema_fast': ema_fast,
                 'ema_slow': ema_slow,
                 'ema_trend': ema_trend,
@@ -256,42 +586,61 @@ class AggressiveMomentumStrategy:
                 'bb_upper': upper[-1] if not np.isnan(upper[-1]) else current_price * 1.05,
                 'bb_lower': lower[-1] if not np.isnan(lower[-1]) else current_price * 0.95,
                 'volatility': volatility,
+                'atr': atr_1h,
+                'atr_pct': atr_pct,
+                'atr_4h': atr_4h,
                 'volume_ratio': volume_ratio,
+                'is_volume_breakout': is_volume_breakout,
                 'adx': adx,
                 'trend_1h': trend_1h,
                 'trend_4h': trend_4h,
                 'overall_trend': overall_trend,
+                # v2.1 new fields
+                'obv_trend': obv_trend,
+                'obv_strength': obv_strength,
+                'divergence_type': divergence_type,
+                'divergence_strength': divergence_strength,
+                'is_pullback': is_pullback,
+                'pullback_reason': pullback_reason,
             }
 
         except Exception as e:
-            print(f"  ⚠️ 获取 {symbol} 数据失败: {e}")
+            print(f"  ⚠️ Failed to get {symbol} data: {e}")
             return None
 
     def calculate_coin_score(self, data: Dict) -> float:
-        """计算币种综合得分（用于选币和轮动）"""
+        """Calculate coin score for ranking and selection (v2.1)"""
         score = 0.0
 
-        # 1. 动量得分 (40%)
+        # 1. Momentum score (30%) - with acceleration bonus
         momentum_score = data['momentum_score']
-        score += momentum_score * 4.0
+        score += momentum_score * 3.0
 
-        # 2. RSI得分 (20%) - RSI较低但在上升
+        # Bonus for accelerating momentum
+        if data['momentum_accel'] > 0.5:
+            score += 5
+
+        # 2. RSI score (20%) - favor recovering oversold
         rsi = data['rsi_1h']
-        if rsi < RSI_STRONG_BUY:
-            rsi_score = 20  # 强超卖
+        if RSI_OVERSOLD < rsi < RSI_STRONG_BUY:
+            rsi_score = 20  # Recovering from oversold - best
         elif rsi < RSI_BUY_THRESHOLD:
-            rsi_score = 15  # 超卖
+            rsi_score = 15  # Still low
         elif rsi > RSI_SELL_THRESHOLD:
-            rsi_score = -10  # 超买
+            rsi_score = -10  # Overbought
         else:
-            rsi_score = 5  # 中性偏好
+            rsi_score = 5  # Neutral
+
+        # Bonus for RSI rising from oversold
+        if data['rsi_15m'] > data['rsi_1h'] and rsi < RSI_BUY_THRESHOLD:
+            rsi_score += 5
         score += rsi_score
 
-        # 3. MACD得分 (15%)
-        macd_score = data['macd_signal'] * 10
+        # 3. MACD score (15%)
+        macd_score = data['macd_signal'] * 12
         score += macd_score
 
-        # 4. 趋势得分 (15%)
+        # 4. Trend score (15%)
         trend_score = 0
         if data['trend_1h'] == 'UP':
             trend_score += 5
@@ -301,10 +650,10 @@ class AggressiveMomentumStrategy:
             trend_score += 5
         score += trend_score
 
-        # 5. 成交量得分 (10%)
+        # 5. Volume score (10%) - with breakout detection
         volume_ratio = data['volume_ratio']
-        if volume_ratio > 2.0:
-            volume_score = 10  # 成交量暴增
+        if data['is_volume_breakout']:
+            volume_score = VOLUME_BREAKOUT_BONUS
         elif volume_ratio > 1.5:
             volume_score = 7
         elif volume_ratio > 1.0:
@@ -313,20 +662,46 @@ class AggressiveMomentumStrategy:
             volume_score = 0
         score += volume_score
 
+        # 6. ADX bonus (5%) - trend strength
+        if data['adx'] > 30:
+            score += 5
+        elif data['adx'] > 25:
+            score += 3
+        elif data['adx'] < 15:
+            score -= 3  # Weak/ranging market penalty
+
+        # v2.1: OBV confirmation bonus (5%)
+        obv_trend = data.get('obv_trend', 'NEUTRAL')
+        if obv_trend == 'UP' and data['overall_trend'] == 'UP':
+            score += 5  # Price and volume agree - bullish
+        elif obv_trend == 'DOWN' and data['overall_trend'] == 'UP':
+            score -= 3  # Volume diverging from price - warning
+
+        # v2.1: RSI divergence bonus (5%)
+        divergence_type = data.get('divergence_type', 'NONE')
+        divergence_strength = data.get('divergence_strength', 0)
+        if divergence_type == 'BULLISH':
+            score += 5 * divergence_strength  # Up to +5 for strong bullish divergence
+        elif divergence_type == 'BEARISH':
+            score -= 5 * divergence_strength  # Penalize bearish divergence
+
+        # v2.1: Pullback entry bonus (5%)
+        if data.get('is_pullback', False):
+            score += 5  # Bonus for pullback entry opportunity
+
         return score
 
     def calculate_position_size(self, data: Dict, available_usdt: float,
                                 total_value: float, current_positions: int) -> float:
-        """计算仓位大小（激进版）"""
-        # 基础仓位
+        """Calculate position size with volatility adjustment (v2.0)"""
+
+        # Base position
         base_size = total_value * BASE_POSITION_PCT
 
-        # 信号强度调整
+        # 1. Signal strength adjustment
         coin_score = self.calculate_coin_score(data)
-
         if coin_score > 30:
-            # 强信号，使用最大仓位
-            signal_multiplier = MAX_SINGLE_POSITION_PCT / BASE_POSITION_PCT
+            signal_multiplier = 1.6  # Strong signal
         elif coin_score > 20:
             signal_multiplier = 1.3
         elif coin_score > 10:
@@ -334,95 +709,136 @@ class AggressiveMomentumStrategy:
         else:
             signal_multiplier = 0.7
 
-        # 波动率调整（高波动适度减仓）
-        volatility = data['volatility']
-        if volatility > 5.0:
-            vol_multiplier = 0.7
-        elif volatility > 3.0:
-            vol_multiplier = 0.85
-        elif volatility < 1.5:
-            vol_multiplier = 1.2  # 低波动可以加仓
+        # 2. Volatility adjustment (risk parity - NEW)
+        # Target: ~2% portfolio volatility per position
+        atr_pct = data['atr_pct']
+        if atr_pct > 0:
+            vol_adjusted_size = (VOLATILITY_TARGET / atr_pct) * base_size
+            # Blend signal-based and vol-adjusted sizing
+            base_size = (base_size * signal_multiplier * 0.6 + vol_adjusted_size * 0.4)
         else:
-            vol_multiplier = 1.0
+            base_size = base_size * signal_multiplier
 
-        # 趋势确认调整
-        trend_multiplier = 1.0
+        # 3. Market regime adjustment (NEW)
+        if self.market_regime == 'BEAR':
+            base_size *= BEAR_MARKET_POSITION_MULT
+        elif self.market_regime == 'NEUTRAL':
+            base_size *= 0.8
+
+        # 4. Trend confirmation adjustment
         if data['trend_1h'] == 'UP' and data['trend_4h'] == 'UP':
-            trend_multiplier = 1.2  # 双趋势确认
+            base_size *= 1.1  # Dual trend confirmation
         elif data['trend_1h'] == 'DOWN' and data['trend_4h'] == 'DOWN':
-            trend_multiplier = 0.5  # 双下跌趋势
+            base_size *= 0.5  # Avoid counter-trend
 
-        # ADX趋势强度调整
-        adx = data['adx']
-        if adx > 30:
-            adx_multiplier = 1.2  # 强趋势
-        elif adx > 20:
-            adx_multiplier = 1.0
-        else:
-            adx_multiplier = 0.8  # 弱趋势
+        # 5. Volume breakout bonus
+        if data['is_volume_breakout'] and data['momentum_short'] > 0:
+            base_size *= 1.15
 
-        # 计算最终仓位
-        adjusted_size = base_size * signal_multiplier * vol_multiplier * trend_multiplier * adx_multiplier
-
-        # 限制单仓不超过最大限制
+        # Cap at maximum
         max_single = total_value * MAX_SINGLE_POSITION_PCT
-        adjusted_size = min(adjusted_size, max_single)
+        adjusted_size = min(base_size, max_single)
 
-        # 限制不超过可用余额
+        # Don't exceed available
         adjusted_size = min(adjusted_size, available_usdt * 0.95)
 
-        # 确保不低于最小交易额
+        # Minimum check
         if adjusted_size < MIN_TRADE_USDT:
             return 0.0
 
         return adjusted_size
 
-    def should_buy(self, data: Dict, current_positions: int) -> Tuple[bool, str, float]:
-        """判断是否买入"""
+    def should_buy(self, data: Dict, current_positions: int,
+                   existing_positions: List[Dict] = None) -> Tuple[bool, str, float]:
+        """Determine if should buy (v2.1 with correlation filter and pullback preference)"""
         reasons = []
         score = self.calculate_coin_score(data)
+        symbol = data['symbol']
 
-        # 条件1: 综合得分足够高
+        # Condition 1: Score threshold
         if score < 10:
-            return False, "综合得分不足", 0
+            return False, "Score too low", 0
 
-        # 条件2: 至少一个时间框架趋势向上
+        # Condition 2: Market regime check
+        if self.market_regime == 'BEAR' and score < 25:
+            return False, f"Bear market, need higher score (have {score:.1f})", 0
+
+        # Condition 3: Trend alignment
         if data['trend_1h'] == 'DOWN' and data['trend_4h'] == 'DOWN':
-            if score < 25:  # 除非得分非常高
-                return False, "双下跌趋势", 0
+            if score < 25:
+                return False, "Double downtrend", 0
 
-        # 条件3: RSI不能太高（避免追高）
+        # Condition 4: RSI not overbought
         if data['rsi_1h'] > 75:
-            return False, "RSI过高，避免追高", 0
+            return False, "RSI overbought", 0
 
-        # 条件4: 动量为正
+        # Condition 5: Positive short-term momentum
         if data['momentum_short'] < -1:
-            return False, "短期动量为负", 0
+            return False, "Negative momentum", 0
 
-        # 构建买入理由
+        # Condition 6: ADX check - prefer trending markets
+        if data['adx'] < 15 and score < 20:
+            return False, "Weak trend (low ADX)", 0
+
+        # v2.1: Correlation filter - avoid highly correlated positions
+        if existing_positions:
+            corr_ok, max_corr = check_position_correlation(
+                symbol, existing_positions, self.price_history
+            )
+            if not corr_ok:
+                return False, f"Too correlated with existing positions ({max_corr:.2f})", 0
+
+        # v2.1: OBV confirmation check
+        obv_trend = data.get('obv_trend', 'NEUTRAL')
+        if obv_trend == 'DOWN' and data['momentum_short'] < 1:
+            return False, "OBV divergence (volume not confirming)", 0
+
+        # v2.1: Bearish divergence warning
+        if data.get('divergence_type') == 'BEARISH' and data.get('divergence_strength', 0) > 0.5:
+            return False, "Strong bearish RSI divergence detected", 0
+
+        # Build reasons
         reasons.append(f"Score={score:.1f}")
+        reasons.append(f"Regime={self.market_regime}")
         reasons.append(f"Mom={data['momentum_score']:.2f}%")
         reasons.append(f"RSI={data['rsi_1h']:.1f}")
 
+        if data['momentum_accel'] > 0:
+            reasons.append("Accel+")
         if data['macd_signal'] > 0:
             reasons.append("MACD+")
         if data['trend_1h'] == 'UP':
             reasons.append("Trend1H↑")
-        if data['trend_4h'] == 'UP':
-            reasons.append("Trend4H↑")
-        if data['volume_ratio'] > 1.5:
-            reasons.append(f"Vol×{data['volume_ratio']:.1f}")
+        if data['is_volume_breakout']:
+            reasons.append("VolBreak!")
+
+        # v2.1: Additional signals
+        if obv_trend == 'UP':
+            reasons.append("OBV↑")
+        if data.get('divergence_type') == 'BULLISH':
+            reasons.append("BullDiv!")
+        if data.get('is_pullback'):
+            reasons.append("Pullback!")
 
         return True, ", ".join(reasons), score
 
-    def should_sell(self, data: Dict, position: Dict) -> Tuple[bool, str]:
-        """判断是否卖出"""
+    def should_sell(self, data: Dict, position: Dict) -> Tuple[bool, str, float]:
+        """Determine if should sell (v2.1 with partial profit taking and time-based exit)
+
+        Returns:
+            (should_sell, reason, sell_portion)
+            sell_portion: 1.0 for full exit, <1.0 for partial exit
+        """
         pnl_pct = position['pnl_percent']
         symbol = position['symbol']
         entry_price = position.get('avg_price', data['price'])
         current_price = data['price']
 
-        # 更新持仓最高价
+        # Get ATR at entry (or current if not stored)
+        entry_atr = self.position_atr.get(symbol, data['atr'])
+        atr_pct = (entry_atr / entry_price) * 100 if entry_price > 0 else data['atr_pct']
+
+        # Update high price tracking
         if symbol not in self.position_high_prices:
             self.position_high_prices[symbol] = current_price
         else:
@@ -430,53 +846,80 @@ class AggressiveMomentumStrategy:
                 self.position_high_prices[symbol] = current_price
 
         high_price = self.position_high_prices[symbol]
+        drawdown_from_high = ((high_price - current_price) / high_price) * 100 if high_price > 0 else 0
 
-        # 从最高价回撤
-        if high_price > 0:
-            drawdown_from_high = ((high_price - current_price) / high_price) * 100
-        else:
-            drawdown_from_high = 0
+        # Calculate dynamic stops based on ATR
+        dynamic_stop_loss = min(atr_pct * ATR_STOP_MULTIPLIER, HARD_STOP_LOSS_PCT)
+        dynamic_trailing = min(atr_pct * TRAILING_STOP_ATR_MULT, 3.0)  # Cap at 3%
 
-        # 1. 硬止损
-        if pnl_pct <= -HARD_STOP_LOSS_PCT:
-            return True, f"HARD_STOP_LOSS (亏损 {abs(pnl_pct):.2f}% > {HARD_STOP_LOSS_PCT}%)"
+        # 1. Hard stop loss (ATR-adjusted) - FULL EXIT
+        if pnl_pct <= -dynamic_stop_loss:
+            return True, f"STOP_LOSS (ATR-adj: {pnl_pct:.2f}% < -{dynamic_stop_loss:.2f}%)", 1.0
 
-        # 2. 跟踪止盈（只有盈利时才启用）
+        # v2.1: Time-based exit for stale positions
+        entry_time = self.position_entry_times.get(symbol)
+        if entry_time:
+            hours_held = (datetime.now() - entry_time).total_seconds() / 3600
+            if hours_held >= STALE_POSITION_HOURS:
+                if pnl_pct <= STALE_POSITION_MIN_LOSS:
+                    return True, f"STALE_POSITION ({hours_held:.0f}h, PnL: {pnl_pct:.2f}%)", 1.0
+
+        # v2.1: Partial profit taking - check each level
+        partial_sells = self.position_partial_sells.get(symbol, set())
+        for level_pct, sell_portion in PARTIAL_PROFIT_LEVELS:
+            if pnl_pct >= level_pct and level_pct not in partial_sells:
+                # Mark this level as triggered
+                if symbol not in self.position_partial_sells:
+                    self.position_partial_sells[symbol] = set()
+                self.position_partial_sells[symbol].add(level_pct)
+                return True, f"PARTIAL_PROFIT ({pnl_pct:.2f}% >= {level_pct}%, selling {sell_portion*100:.0f}%)", sell_portion
+
+        # 2. Trailing stop (ATR-adjusted, only when in profit) - FULL EXIT
         if pnl_pct > MIN_TAKE_PROFIT_PCT:
-            if drawdown_from_high > TRAILING_STOP_PCT:
-                return True, f"TRAILING_STOP (从高点回撤 {drawdown_from_high:.2f}%, 锁定利润 {pnl_pct:.2f}%)"
+            if drawdown_from_high > dynamic_trailing:
+                return True, f"TRAILING_STOP (from high: -{drawdown_from_high:.2f}%, locked: {pnl_pct:.2f}%)", 1.0
 
-        # 3. 激进止盈
+        # 3. Aggressive take profit - FULL EXIT of remaining
         if pnl_pct >= AGGRESSIVE_TAKE_PROFIT_PCT:
-            return True, f"AGGRESSIVE_TAKE_PROFIT (盈利 {pnl_pct:.2f}% >= {AGGRESSIVE_TAKE_PROFIT_PCT}%)"
+            return True, f"TAKE_PROFIT ({pnl_pct:.2f}% >= {AGGRESSIVE_TAKE_PROFIT_PCT}%)", 1.0
 
-        # 4. RSI强超买卖出
+        # 4. RSI extreme overbought with profit - FULL EXIT
         if data['rsi_1h'] >= 80 and pnl_pct > 0:
-            return True, f"RSI_OVERBOUGHT (RSI={data['rsi_1h']:.1f}, 盈利={pnl_pct:.2f}%)"
+            return True, f"RSI_EXTREME (RSI={data['rsi_1h']:.1f}, profit={pnl_pct:.2f}%)", 1.0
 
-        # 5. MACD死叉且盈利时卖出
+        # 5. MACD death cross with profit
         if data['macd_signal'] == -1 and pnl_pct > 1:
-            return True, f"MACD_DEATH_CROSS (盈利={pnl_pct:.2f}%)"
+            return True, f"MACD_BEARISH (profit={pnl_pct:.2f}%)", 1.0
 
-        # 6. 动量反转（短期动量大幅转负）
+        # 6. Strong momentum reversal
         if data['momentum_short'] < -3 and pnl_pct > 0:
-            return True, f"MOMENTUM_REVERSAL (动量={data['momentum_short']:.2f}%)"
+            return True, f"MOMENTUM_REVERSAL (mom={data['momentum_short']:.2f}%)", 1.0
 
-        return False, ""
+        # 7. Market regime shift to bear
+        if self.market_regime == 'BEAR' and pnl_pct > 0:
+            if data['trend_1h'] == 'DOWN' and data['trend_4h'] == 'DOWN':
+                return True, f"REGIME_SHIFT (bear market, locking {pnl_pct:.2f}%)", 1.0
+
+        # v2.1: Bearish divergence warning with profit
+        if data.get('divergence_type') == 'BEARISH' and pnl_pct > 2:
+            if data.get('divergence_strength', 0) > 0.6:
+                return True, f"BEARISH_DIVERGENCE (locking {pnl_pct:.2f}%)", 1.0
+
+        return False, "", 0.0
 
     def check_rotation(self, current_positions: List[Dict], market_data: Dict[str, Dict]) -> Optional[Dict]:
-        """检查是否需要轮动持仓"""
+        """Check if position rotation is needed (v2.0)"""
         if not current_positions:
             return None
 
-        # 检查轮动间隔
+        # Check rotation interval
         now = datetime.now()
         if self.last_rotation_time:
-            hours_since_rotation = (now - self.last_rotation_time).total_seconds() / 3600
-            if hours_since_rotation < ROTATION_INTERVAL_HOURS:
+            hours_since = (now - self.last_rotation_time).total_seconds() / 3600
+            if hours_since < ROTATION_INTERVAL_HOURS:
                 return None
 
-        # 计算当前持仓得分
+        # Calculate current position scores
         current_scores = {}
         for pos in current_positions:
             symbol = pos['symbol']
@@ -486,17 +929,14 @@ class AggressiveMomentumStrategy:
         if not current_scores:
             return None
 
-        # 找到得分最低的持仓
+        # Find worst position
         worst_symbol = min(current_scores, key=current_scores.get)
         worst_score = current_scores[worst_symbol]
 
-        # 计算所有币种得分
-        all_scores = {}
-        for symbol, data in market_data.items():
-            all_scores[symbol] = self.calculate_coin_score(data)
-
-        # 找到未持有的最高分币种
+        # Find best alternative
+        all_scores = {sym: self.calculate_coin_score(data) for sym, data in market_data.items()}
         held_currencies = [p['currency'] for p in current_positions]
+
         best_new_symbol = None
         best_new_score = 0
 
@@ -506,21 +946,23 @@ class AggressiveMomentumStrategy:
                 best_new_symbol = symbol
                 best_new_score = score
 
-        # 如果有更好的选择，考虑轮动
+        # Rotation decision (higher threshold in v2.0)
         if best_new_symbol and best_new_score > worst_score + MIN_ROTATION_IMPROVEMENT:
-            return {
-                'sell_symbol': worst_symbol,
-                'sell_score': worst_score,
-                'buy_symbol': best_new_symbol,
-                'buy_score': best_new_score,
-                'improvement': best_new_score - worst_score,
-            }
+            # Additional check: only rotate if worst is actually underperforming
+            worst_pos = next((p for p in current_positions if p['symbol'] == worst_symbol), None)
+            if worst_pos and worst_pos.get('pnl_percent', 0) < 1:  # Only rotate if not profitable
+                return {
+                    'sell_symbol': worst_symbol,
+                    'sell_score': worst_score,
+                    'buy_symbol': best_new_symbol,
+                    'buy_score': best_new_score,
+                    'improvement': best_new_score - worst_score,
+                }
 
         return None
 
     def check_risk_limits(self) -> Tuple[bool, str]:
-        """检查风险限制"""
-        # 加载权益历史
+        """Check risk limits"""
         if not os.path.exists(EQUITY_FILE):
             return True, ""
 
@@ -536,14 +978,14 @@ class AggressiveMomentumStrategy:
         values = [h['total_value'] for h in history]
         current_value = values[-1]
 
-        # 检查最大回撤
+        # Max drawdown check
         peak_value = max(values)
         if peak_value > 0:
             drawdown = ((peak_value - current_value) / peak_value) * 100
             if drawdown > MAX_DRAWDOWN_PCT:
-                return False, f"最大回撤触发 ({drawdown:.2f}% > {MAX_DRAWDOWN_PCT}%)"
+                return False, f"Max drawdown ({drawdown:.2f}% > {MAX_DRAWDOWN_PCT}%)"
 
-        # 检查每日亏损
+        # Daily loss check
         today = datetime.now().date()
         if self.daily_start_date != today:
             self.daily_start_date = today
@@ -552,12 +994,12 @@ class AggressiveMomentumStrategy:
         if self.daily_starting_value and self.daily_starting_value > 0:
             daily_pnl = ((current_value - self.daily_starting_value) / self.daily_starting_value) * 100
             if daily_pnl < -DAILY_LOSS_LIMIT_PCT:
-                return False, f"每日亏损限制触发 ({daily_pnl:.2f}% < -{DAILY_LOSS_LIMIT_PCT}%)"
+                return False, f"Daily loss limit ({daily_pnl:.2f}% < -{DAILY_LOSS_LIMIT_PCT}%)"
 
         return True, ""
 
     def save_equity_snapshot(self, total_value: float):
-        """保存权益快照"""
+        """Save equity snapshot"""
         os.makedirs('data', exist_ok=True)
 
         history = []
@@ -572,28 +1014,40 @@ class AggressiveMomentumStrategy:
             'timestamp': datetime.now().isoformat(),
             'total_value': total_value,
             'mode': self.client.get_mode_str(),
+            'regime': self.market_regime,  # NEW
         }
 
         history.append(snapshot)
-        history = history[-2000:]  # 保留更多历史
+        history = history[-2000:]
 
         with open(EQUITY_FILE, 'w') as f:
             json.dump(history, f, indent=2)
 
-    def execute_buy(self, symbol: str, usdt_amount: float) -> Optional[Dict]:
-        """执行买入"""
+    def execute_buy(self, symbol: str, usdt_amount: float, data: Dict = None) -> Optional[Dict]:
+        """Execute buy order"""
         min_order_usdt = self.client.get_min_order_usdt(symbol)
         if usdt_amount < min_order_usdt:
-            print(f"  ⚠️ 金额 ${usdt_amount:.2f} < 最小订单 ${min_order_usdt:.2f}")
+            print(f"  ⚠️ Amount ${usdt_amount:.2f} < min ${min_order_usdt:.2f}")
             return None
 
         try:
-            print(f"  📈 买入 {symbol}, 金额: ${usdt_amount:.2f}")
+            print(f"  📈 BUY {symbol}, amount: ${usdt_amount:.2f}")
             order = self.client.create_market_buy_usdt(symbol, usdt_amount)
 
-            # 记录入场价格
-            self.position_entry_prices[symbol] = order.get('average', 0)
-            self.position_high_prices[symbol] = order.get('average', 0)
+            # Record entry price and ATR
+            entry_price = order.get('average', 0)
+            self.position_entry_prices[symbol] = entry_price
+            self.position_high_prices[symbol] = entry_price
+
+            # Store ATR for dynamic stops
+            if data:
+                self.position_atr[symbol] = data.get('atr', 0)
+
+            # v2.1: Record entry time for time-based exit
+            self.position_entry_times[symbol] = datetime.now()
+
+            # v2.1: Initialize partial sells tracker
+            self.position_partial_sells[symbol] = set()
 
             log_action('BUY', {
                 'symbol': symbol,
@@ -601,22 +1055,24 @@ class AggressiveMomentumStrategy:
                 'order_id': order.get('id'),
                 'filled': order.get('filled'),
                 'avg_price': order.get('average'),
+                'regime': self.market_regime,
             })
 
-            print(f"  ✅ 买入成功! 订单ID: {order.get('id')}")
+            print(f"  ✅ Buy success! Order: {order.get('id')}")
             return order
 
         except Exception as e:
-            print(f"  ❌ 买入失败: {e}")
+            print(f"  ❌ Buy failed: {e}")
             log_action('BUY_FAILED', {'symbol': symbol, 'error': str(e)})
             return None
 
-    def execute_sell(self, symbol: str, amount: float, reason: str) -> Optional[Dict]:
-        """执行卖出"""
+    def execute_sell(self, symbol: str, amount: float, reason: str,
+                     is_full_exit: bool = True) -> Optional[Dict]:
+        """Execute sell order (v2.1: supports partial sells)"""
         min_amount = self.client.get_min_order_amount(symbol)
 
         if amount < min_amount:
-            print(f"  ⚠️ 数量 {amount:.8f} < 最小订单 {min_amount:.8f} (粉尘持仓)")
+            print(f"  ⚠️ Amount {amount:.8f} < min {min_amount:.8f} (dust)")
             log_action('DUST_POSITION', {
                 'symbol': symbol,
                 'amount': amount,
@@ -626,14 +1082,21 @@ class AggressiveMomentumStrategy:
             return {'dust': True, 'symbol': symbol, 'amount': amount}
 
         try:
-            print(f"  📉 卖出 {symbol}, 数量: {amount:.8f}, 原因: {reason}")
+            print(f"  📉 SELL {symbol}, amount: {amount:.8f}, reason: {reason}")
             order = self.client.create_market_sell(symbol, amount)
 
-            # 清除记录
-            if symbol in self.position_entry_prices:
-                del self.position_entry_prices[symbol]
-            if symbol in self.position_high_prices:
-                del self.position_high_prices[symbol]
+            # v2.1: Only clear records on full exit
+            if is_full_exit:
+                if symbol in self.position_entry_prices:
+                    del self.position_entry_prices[symbol]
+                if symbol in self.position_high_prices:
+                    del self.position_high_prices[symbol]
+                if symbol in self.position_atr:
+                    del self.position_atr[symbol]
+                if symbol in self.position_entry_times:
+                    del self.position_entry_times[symbol]
+                if symbol in self.position_partial_sells:
+                    del self.position_partial_sells[symbol]
 
             log_action('SELL', {
                 'symbol': symbol,
@@ -642,21 +1105,22 @@ class AggressiveMomentumStrategy:
                 'filled': order.get('filled'),
                 'avg_price': order.get('average'),
                 'reason': reason,
+                'is_partial': not is_full_exit,
             })
 
-            print(f"  ✅ 卖出成功! 订单ID: {order.get('id')}")
+            print(f"  ✅ Sell success! Order: {order.get('id')}")
             return order
 
         except Exception as e:
-            print(f"  ❌ 卖出失败: {e}")
+            print(f"  ❌ Sell failed: {e}")
             log_action('SELL_FAILED', {'symbol': symbol, 'error': str(e)})
             return None
 
     def run_once(self) -> Dict:
-        """执行一次策略"""
+        """Execute strategy once (v2.1)"""
         print("\n" + "=" * 70)
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 激进动量策略检查")
-        print(f"模式: {self.client.get_mode_str()}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Aggressive Momentum Strategy v2.1")
+        print(f"Mode: {self.client.get_mode_str()}")
         print("=" * 70)
 
         result = {
@@ -665,15 +1129,20 @@ class AggressiveMomentumStrategy:
             'analysis': [],
         }
 
-        # 1. 风险检查
+        # 1. Risk check
         can_trade, risk_msg = self.check_risk_limits()
         if not can_trade:
-            print(f"\n🚨 风险熔断: {risk_msg}")
+            print(f"\n🚨 RISK HALT: {risk_msg}")
             log_action('RISK_HALT', {'reason': risk_msg})
             return result
 
-        # 2. 获取所有币种的市场数据
-        print("\n📊 市场分析:")
+        # 2. Detect market regime (NEW)
+        self.detect_market_regime()
+        regime_emoji = {'BULL': '🐂', 'BEAR': '🐻', 'NEUTRAL': '😐'}
+        print(f"\n📊 Market Regime: {regime_emoji.get(self.market_regime, '')} {self.market_regime}")
+
+        # 3. Get market data for all coins
+        print("\n📊 Market Analysis:")
         market_data = {}
         for symbol in self.client.whitelist:
             data = self.get_market_data(symbol)
@@ -681,126 +1150,132 @@ class AggressiveMomentumStrategy:
                 market_data[symbol] = data
                 score = self.calculate_coin_score(data)
                 trend = f"{data['trend_1h']}/{data['trend_4h']}"
+                accel = "↗" if data['momentum_accel'] > 0 else "↘" if data['momentum_accel'] < 0 else "→"
+                vol_brk = "📊" if data['is_volume_breakout'] else ""
                 print(f"  {symbol}: Score={score:>6.1f} | RSI={data['rsi_1h']:>5.1f} | "
-                      f"Mom={data['momentum_score']:>+6.2f}% | Trend={trend}")
+                      f"Mom={data['momentum_score']:>+6.2f}%{accel} | Trend={trend} {vol_brk}")
                 result['analysis'].append({**data, 'score': score})
 
-        # 按得分排序
+        # Sort by score
         sorted_coins = sorted(market_data.items(), key=lambda x: self.calculate_coin_score(x[1]), reverse=True)
-        print(f"\n🏆 币种排名: {' > '.join([s[0].split('/')[0] for s in sorted_coins])}")
+        print(f"\n🏆 Ranking: {' > '.join([s[0].split('/')[0] for s in sorted_coins])}")
 
-        # 3. 检查现有持仓
+        # 4. Check existing positions
         positions = self.client.get_all_positions()
         sold_symbols = set()
 
         if positions:
-            print(f"\n💼 检查持仓 ({len(positions)}):")
+            print(f"\n💼 Checking positions ({len(positions)}):")
             for pos in positions:
                 symbol = pos['symbol']
                 score = self.calculate_coin_score(market_data[symbol]) if symbol in market_data else 0
                 print(f"  {symbol}: {pos['amount']:.8f} @ ${pos['current_price']:,.2f} | "
-                      f"盈亏: {pos['pnl_percent']:+.2f}% | Score: {score:.1f}")
+                      f"PnL: {pos['pnl_percent']:+.2f}% | Score: {score:.1f}")
 
                 if symbol in market_data:
-                    should_sell, reason = self.should_sell(market_data[symbol], pos)
+                    should_sell, reason, sell_portion = self.should_sell(market_data[symbol], pos)
                     if should_sell:
-                        order = self.execute_sell(symbol, pos['amount'], reason)
-                        if order and not order.get('dust'):
-                            result['actions'].append({'type': 'SELL', 'symbol': symbol, 'reason': reason})
-                            sold_symbols.add(symbol)
+                        # v2.1: Handle partial sells
+                        sell_amount = pos['amount'] * sell_portion
+                        is_full_exit = sell_portion >= 1.0 or sell_amount >= pos['amount'] * 0.95
 
-        # 4. 检查轮动机会
+                        order = self.execute_sell(symbol, sell_amount, reason, is_full_exit=is_full_exit)
+                        if order and not order.get('dust'):
+                            action_type = 'SELL' if is_full_exit else 'PARTIAL_SELL'
+                            result['actions'].append({'type': action_type, 'symbol': symbol, 'reason': reason})
+                            if is_full_exit:
+                                sold_symbols.add(symbol)
+
+        # 5. Check rotation
         remaining_positions = [p for p in positions if p['symbol'] not in sold_symbols]
-        if remaining_positions and len(remaining_positions) > 0:
+        if remaining_positions:
             rotation = self.check_rotation(remaining_positions, market_data)
             if rotation:
-                print(f"\n🔄 轮动建议:")
-                print(f"   卖出 {rotation['sell_symbol']} (Score: {rotation['sell_score']:.1f})")
-                print(f"   买入 {rotation['buy_symbol']} (Score: {rotation['buy_score']:.1f})")
-                print(f"   提升: +{rotation['improvement']:.1f}")
+                print(f"\n🔄 Rotation suggested:")
+                print(f"   Sell {rotation['sell_symbol']} (Score: {rotation['sell_score']:.1f})")
+                print(f"   Buy {rotation['buy_symbol']} (Score: {rotation['buy_score']:.1f})")
+                print(f"   Improvement: +{rotation['improvement']:.1f}")
 
-                # 执行轮动
                 sell_pos = next((p for p in remaining_positions if p['symbol'] == rotation['sell_symbol']), None)
                 if sell_pos:
                     sell_order = self.execute_sell(rotation['sell_symbol'], sell_pos['amount'],
-                                                   f"ROTATION (Score: {rotation['sell_score']:.1f} -> {rotation['buy_score']:.1f})")
+                                                   f"ROTATION ({rotation['sell_score']:.1f} -> {rotation['buy_score']:.1f})")
                     if sell_order and not sell_order.get('dust'):
                         result['actions'].append({'type': 'ROTATION_SELL', 'symbol': rotation['sell_symbol']})
                         sold_symbols.add(rotation['sell_symbol'])
 
-                        # 使用卖出金额买入新币种
-                        usdt_amount = sell_pos['current_value'] * 0.98  # 留些余量
-                        buy_order = self.execute_buy(rotation['buy_symbol'], usdt_amount)
+                        usdt_amount = sell_pos['current_value'] * 0.98
+                        buy_data = market_data.get(rotation['buy_symbol'])
+                        buy_order = self.execute_buy(rotation['buy_symbol'], usdt_amount, buy_data)
                         if buy_order:
                             result['actions'].append({'type': 'ROTATION_BUY', 'symbol': rotation['buy_symbol']})
 
                         self.last_rotation_time = datetime.now()
 
-        # 5. 检查买入机会
-        print("\n🔍 检查买入机会:")
+        # 6. Check buy opportunities
+        print("\n🔍 Checking buy opportunities:")
         balance = self.client.get_balance()
         tickers = self.client.get_all_tickers()
         total_value = self.client.calculate_total_value_usdt(balance, tickers)
         usdt_free = self.client.get_usdt_balance()
 
         current_positions = len([p for p in positions if p['symbol'] not in sold_symbols])
-
-        # 计算当前仓位比例
         position_value = sum([p['current_value'] for p in positions if p['symbol'] not in sold_symbols])
         position_ratio = position_value / total_value if total_value > 0 else 0
 
-        print(f"  当前仓位比例: {position_ratio*100:.1f}% / {MAX_TOTAL_POSITION_PCT*100:.0f}%")
+        print(f"  Position ratio: {position_ratio*100:.1f}% / {MAX_TOTAL_POSITION_PCT*100:.0f}%")
+        print(f"  Market regime: {self.market_regime}")
 
         if position_ratio >= MAX_TOTAL_POSITION_PCT:
-            print(f"  ⚠️ 已达到最大总仓位限制")
+            print(f"  ⚠️ Max position limit reached")
         elif usdt_free < MIN_TRADE_USDT:
-            print(f"  ⚠️ USDT余额不足 (${usdt_free:.2f} < ${MIN_TRADE_USDT:.2f})")
+            print(f"  ⚠️ Insufficient USDT (${usdt_free:.2f} < ${MIN_TRADE_USDT:.2f})")
         else:
-            # 按得分排序，选择最佳币种
             held_currencies = [p['currency'] for p in positions if p['symbol'] not in sold_symbols]
             buy_candidates = []
+
+            # v2.1: Pass existing positions for correlation check
+            remaining_positions = [p for p in positions if p['symbol'] not in sold_symbols]
 
             for symbol, data in sorted_coins:
                 currency = symbol.split('/')[0]
                 if currency in held_currencies:
                     continue
 
-                should_buy, reason, score = self.should_buy(data, current_positions)
+                should_buy, reason, score = self.should_buy(data, current_positions, remaining_positions)
                 if should_buy:
                     buy_candidates.append((symbol, data, reason, score))
 
             if buy_candidates:
-                # 选择得分最高的
                 symbol, data, reason, score = buy_candidates[0]
                 position_size = self.calculate_position_size(data, usdt_free, total_value, current_positions)
 
                 if position_size >= MIN_TRADE_USDT:
-                    print(f"  📈 买入候选: {symbol}")
-                    print(f"     理由: {reason}")
-                    print(f"     建议仓位: ${position_size:.2f} ({position_size/total_value*100:.1f}%)")
+                    print(f"  📈 Buy candidate: {symbol}")
+                    print(f"     Reason: {reason}")
+                    print(f"     Size: ${position_size:.2f} ({position_size/total_value*100:.1f}%)")
 
-                    order = self.execute_buy(symbol, position_size)
+                    order = self.execute_buy(symbol, position_size, data)
                     if order:
                         result['actions'].append({'type': 'BUY', 'symbol': symbol, 'reason': reason})
                 else:
-                    print(f"  ℹ️ {symbol} 计算仓位过小，跳过")
+                    print(f"  ℹ️ {symbol} position too small, skipping")
             else:
-                print("  无符合条件的买入信号")
+                print("  No qualifying buy signals")
 
-        # 6. 总结
+        # 7. Summary
         if not result['actions']:
-            log_action('HOLD', {'reason': 'No trading signals'})
+            log_action('HOLD', {'reason': 'No signals', 'regime': self.market_regime})
 
-        # 保存权益快照
         self.save_equity_snapshot(total_value)
 
-        # 显示账户状态
-        print(f"\n💰 账户状态:")
-        print(f"   总资产: ${total_value:.2f}")
-        print(f"   USDT可用: ${usdt_free:.2f}")
-        print(f"   仓位价值: ${position_value:.2f} ({position_ratio*100:.1f}%)")
+        print(f"\n💰 Account Status:")
+        print(f"   Total: ${total_value:.2f}")
+        print(f"   USDT: ${usdt_free:.2f}")
+        print(f"   Positions: ${position_value:.2f} ({position_ratio*100:.1f}%)")
+        print(f"   Regime: {self.market_regime}")
 
-        # 计算收益
+        # Calculate returns
         if os.path.exists(EQUITY_FILE):
             try:
                 with open(EQUITY_FILE, 'r') as f:
@@ -808,7 +1283,7 @@ class AggressiveMomentumStrategy:
                 if len(history) > 1:
                     initial_value = history[0]['total_value']
                     total_return = ((total_value - initial_value) / initial_value) * 100
-                    print(f"   累计收益: {total_return:+.2f}%")
+                    print(f"   Total Return: {total_return:+.2f}%")
             except:
                 pass
 
@@ -818,11 +1293,14 @@ class AggressiveMomentumStrategy:
 
 
 def get_strategy_status() -> Dict:
-    """获取策略状态（给Dashboard用）"""
+    """Get strategy status for Dashboard"""
     client = BinanceClient()
     strategy = AggressiveMomentumStrategy(client)
 
-    # 获取市场数据
+    # Detect market regime
+    regime = strategy.detect_market_regime()
+
+    # Get market data
     analysis = []
     signals = []
     for symbol in client.whitelist:
@@ -844,8 +1322,10 @@ def get_strategy_status() -> Dict:
                 'score': score,
                 'rsi': data['rsi_1h'],
                 'momentum': data['momentum_score'],
+                'momentum_accel': data['momentum_accel'],
                 'price': data['price'],
                 'signal': signal,
+                'volume_breakout': data['is_volume_breakout'],
             })
 
     positions = client.get_all_positions()
@@ -864,19 +1344,21 @@ def get_strategy_status() -> Dict:
         'analysis': analysis,
         'tickers': tickers,
         'recent_logs': logs,
+        'market_regime': regime,  # NEW
         'config': {
             'max_single_position_pct': MAX_SINGLE_POSITION_PCT * 100,
             'max_total_position_pct': MAX_TOTAL_POSITION_PCT * 100,
             'hard_stop_loss_pct': HARD_STOP_LOSS_PCT,
-            'trailing_stop_pct': TRAILING_STOP_PCT,
+            'atr_stop_multiplier': ATR_STOP_MULTIPLIER,
             'aggressive_take_profit_pct': AGGRESSIVE_TAKE_PROFIT_PCT,
             'daily_loss_limit_pct': DAILY_LOSS_LIMIT_PCT,
             'max_drawdown_pct': MAX_DRAWDOWN_PCT,
+            'volatility_target': VOLATILITY_TARGET,
         }
     }
 
 
-# 运行入口
+# Entry point
 if __name__ == '__main__':
     strategy = AggressiveMomentumStrategy()
     strategy.run_once()
